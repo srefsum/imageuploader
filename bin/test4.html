@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dynamic Select Example</title>
+    <script>
+        function updateOptions() {
+            var categorySelect = document.getElementById('category');
+            var itemSelect = document.getElementById('item');
+            var selectedCategory = categorySelect.value;
+
+            // Hide all options first
+            for (var i = 0; i < itemSelect.options.length; i++) {
+                itemSelect.options[i].style.display = 'none';
+            }
+
+            // Show options that match the selected category
+            var matchingOptions = itemSelect.querySelectorAll('.' + selectedCategory);
+            for (var i = 0; i < matchingOptions.length; i++) {
+                matchingOptions[i].style.display = 'block';
+            }
+
+            // Reset selection to the first visible option
+            for (var i = 0; i < itemSelect.options.length; i++) {
+                if (itemSelect.options[i].style.display === 'block') {
+                    itemSelect.value = itemSelect.options[i].value;
+                    break;
+                }
+            }
+        }
+
+        // Run on page load to set initial state
+        window.onload = updateOptions;
+    </script>
+</head>
+<body>
+
+<form action="/cgi-bin/process.cgi" method="GET">
+    <!-- Category Menu -->
+    <label for="category">Choose Category:</label>
+    <select name="category" id="category" onchange="updateOptions()">
+        <option value="fruits">Fruits</option>
+        <option value="vegetables">Vegetables</option>
+    </select>
+
+    <!-- Dependent Option Menu -->
+    <label for="item">Choose Item:</label>
+    <select name="item" id="item">
+        <!-- Fruits -->
+        <option value="apple" class="fruits">Apple</option>
+        <option value="banana" class="fruits">Banana</option>
+        
+        <!-- Vegetables -->
+        <option value="carrot" class="vegetables">Carrot</option>
+        <option value="broccoli" class="vegetables">Broccoli</option>
+    </select>
+
+    <input type="submit" value="Submit">
+</form>
+
+</body>
+</html>

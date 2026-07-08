@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+</head>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>File Upload to Different Directories</title>
+        <style>
+#include "../templates/style.html"
+        </style>
+    </head>
+
+    <body>
+       <header>
+            <div class="container">
+                <h1>Dynamic Perl CGI Engine</h1>
+                <p>Serving this page dynamically via a Common Gateway Interface script.</p>
+                <a href="#features" class="btn">Explore Features</a>
+            </div>
+        </header>
+
+        <div class="container" id="features">
+            <div class="features">
+                <div class="feature-box">
+                <form action="/upload" method="post" enctype="multipart/form-data">
+
+                    <!-- Dropdown to select the target directory type -->
+                    <label for="category">Choose Destination Directory:</label>
+                    <select name="category" id="category">
+#replace "options"
+                    </select>
+                    <br><br>
+
+                    <!-- File input field -->
+                    <label for="filename">Select File:</label>
+                    <input type="file" name="filename" id="filename" />
+                    <br><br>
+
+                    <input type="submit" value="Upload File" />
+                </form>
+                </div>
+            </div>
+        </div>
+    
+    </body>
+</html>

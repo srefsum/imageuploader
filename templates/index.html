@@ -1,0 +1,88 @@
+   <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to Our Perl CGI App</title>
+        <style>
+            :root {
+                --primary: #4CAF50;
+                --dark: #333;
+                --light: #f4f4f4;
+            }
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                margin: 0;
+                padding: 0;
+                color: var(--dark);
+                line-height: 1.6;
+            }
+            header {
+                background: var(--dark);
+                color: #fff;
+                padding: 2rem 0;
+                text-align: center;
+            }
+            .container {
+                width: 80%;
+                margin: auto;
+                overflow: hidden;
+                padding: 3rem 1rem;
+            }
+            .btn {
+                display: inline-block;
+                background: var(--primary);
+                color: #fff;
+                padding: 0.8rem 2rem;
+                text-decoration: none;
+                border-radius: 5px;
+                font-weight: bold;
+                margin-top: 1rem;
+                transition: background 0.3s ease;
+            }
+            .btn:hover {
+                background: #45a049;
+            }
+            .features {
+                display: flex;
+                justify-content: space-around;
+                margin-top: 2rem;
+            }
+            .feature-box {
+                background: var(--light);
+                padding: 1.5rem;
+                width: 30%;
+                border-radius: 5px;
+                text-align: center;
+            }
+        </style>
+    </head>
+    <body>
+
+        <header>
+            <div class="container">
+                <h1>Dynamic Perl CGI Engine</h1>
+                <p>Serving this page dynamically via a Common Gateway Interface script.</p>
+                <a href="#features" class="btn">Explore Features</a>
+            </div>
+        </header>
+
+        <div class="container" id="features">
+            <div class="features">
+                <div class="feature-box">
+                    <h3>Fast</h3>
+                    <p>Perl runs compiled at the speed of the system interpreter, making it an excellent lightweight backend.</p>
+                </div>
+                <div class="feature-box">
+                    <h3>Secure</h3>
+                    <p>Leverage the robust system security features native to your Linux/Unix web server environment.</p>
+                </div>
+                <div class="feature-box">
+                    <h3>Simple</h3>
+                    <p>Deploy landing pages and APIs instantly without heavyweight Node or Python environments.</p>
+                </div>
+            </div>
+        </div>
+
+    </body>
+    </html>

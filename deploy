@@ -1,0 +1,7 @@
+#!/bin/bash
+cp /home/sigvald/wrk/code/bin/app /var/www/image-server/bin
+cp /home/sigvald/wrk/code/lib/CGI/Dispatch.pm /var/www/image-server/lib/CGI
+cp /home/sigvald/wrk/code/lib/upload.pm /var/www/image-server/lib/
+cp /home/sigvald/wrk/code/lib/serve.pm /var/www/image-server/lib/
+cp /home/sigvald/wrk/code/templates/* /var/www/image-server/templates
+chown -R www-data:www-data /var/www/image-server/

@@ -1,0 +1,1060 @@
+#!/usr/bin/perl
+####
+use strict;
+use warnings;
+
+our $VERSION = "0.3.0";
+=head1 NAME
+
+SelfService 
+
+=head1 DESCRIPTION
+
+This application provides a web interface for users to change their current password 
+It also provides the recovery of a lost/forgotten password.
+
+=head1 AUTHOR
+Sigvald Refsum <sigref@globalconnect.no>
+
+=cut
+
+use CGI;
+use JSON;
+use Data::Dumper;
+use Cwd qw( abs_path cwd);
+use File::Basename;
+use Config::General qw(ParseConfig);
+use Time::HiRes qw(gettimeofday tv_interval);
+use utf8;
+use URI::Escape;
+use Storable qw(dclone);
+
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+use CGI::Dispatch 'url';
+use boolean qw (false true);
+use ObjectId qw (NextId);
+use Heartbeat;
+use CommonApiHandler;
+use jsonTestdata;
+use SessionFile;
+use ADConnection;
+use Generator;
+use TokenAPI;
+use StringCrypt;
+use Pages;
+use Mail;
+use strengthcheck;
+use gcSyslog;
+
+our %version_string = ( version => $VERSION );
+
+my ( $ApplicationName, $ApplicationPath ) = fileparse( abs_path($0) );
+our $config;
+our $SystemName        = 'OSS Self Service';
+our $SystemDescription = '';
+
+GlobalConfig();
+CommonApiHandler::CommonApiHandlerInit();
+
+#url "/init"             => \&pages,                   REQUEST_METHOD => ['GET','POST'];           # parameter defines which action pages to serve
+url "/mailLink"          => \&mailLink,                REQUEST_METHOD => ['GET'];                  # parameter defines which action pages to serve
+url "/pages"             => \&pages,                   REQUEST_METHOD => ['GET','POST'];           # parameter defines which action pages to serve
+url "/changePW"          => \&changePW,                REQUEST_METHOD => ['GET'];                  # parameter defines which action pages to serve
+url "/getOTP"            => \&getOTP,                  REQUEST_METHOD => ['POST'];                 # parameter defines which action pages to serve
+url "/backToSetPw"       => \&backToSetPw,             REQUEST_METHOD => ['GET'];                  # parameter defines which action pages to serve
+url "/recoverLink"       => \&recoverLink,             REQUEST_METHOD => ['GET'];                  # parameter defines which action pages to serve
+url "/recoverPW"         => \&recoverPW,               REQUEST_METHOD => ['GET'];                  # parameter defines which action pages to serve
+url "/setNewPW"          => \&setNewPW,                REQUEST_METHOD => ['GET','POST'];           # parameter defines which action pages to serve
+url "/complete"          => \&complete,                REQUEST_METHOD => ['GET','POST'];           # parameter defines which action pages to serve
+url "/fail"              => \&fail,                    REQUEST_METHOD => ['GET','POST'];           # parameter defines which action pages to serve
+url "/timeout"           => \&timeout,                 REQUEST_METHOD => ['GET','POST'];           # parameter defines which action pages to serve
+url "/"                  => \&landing_pages,           REQUEST_METHOD => ['GET'];                  # landing pages for selecting functions
+
+
+my $pages_match      = qr /((?:[&\?\/])(page\=)?(?'page'[a-z0-9\.\-]*))/;
+my $uuid_match       = qr /((?:[&\?\/])(uuid\=)?(?'uuid'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))/;
+my $uid_match        = qr /((?:[&\?\/])(uid\=)?(?'uid'[A-Za-z0-9\.\-]*))/;
+my $psw_match        = qr /((?:[&\?\/])(psw\=)?(?'psw'[A-Za-z0-9\.\-\%\$\#\_\^\~\<\>\/\(\)\[\]\{\}]*))/;
+my $mail_match       = qr /((?:[&\?\/])(mail\=)?(?'mail'[a-zA-Z0-9\.\-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}))/;
+my $link_match       = qr /((?:[&\?\/])(link\=)?(?'link'.*))$/;
+
+my %param_link = (
+        pattern       => $link_match,                   
+        documentation => {
+            name        => 'link',                                           
+            description => "match a one time link" .
+                           "", 
+            in          => 'query',                                          
+            required    => false,                                           
+            schema      => {
+                    type    => 'string',                                     
+                    example => '/xF6/y6Xl7+3XpdKAxGZhDyhQhgjMknLgzHVnzQy+0oJsF0kV2z0SvEVicIEB4V6Hu+3WXKz92o0='
+            },
+            example    => '/xF6/y6Xl7+3XpdKAxGZhDyhQhgjMknLgzHVnzQy+0oJsF0kV2z0SvEVicIEB4V6Hu+3WXKz92o0='
+        }    
+    );
+
+my %param_psw = (
+        pattern       => $psw_match,                   
+        documentation => {
+            name        => 'psw',                                           
+            description => "ifname select which xxx" .
+                           "", 
+            in          => 'query',                                          
+            required    => false,                                           
+            schema      => {
+                    type    => 'string',                                     
+                    example => 'psw=page1'
+            },
+            example    => 'xxxddd098'
+        }    
+    );
+
+my %param_pages = (
+        pattern       => $pages_match,                   
+        documentation => {
+            name        => 'pages',                                           
+            description => "ifname select which xxx" .
+                           "", 
+            in          => 'query',                                          
+            required    => false,                                           
+            schema      => {
+                    type    => 'string',                                     
+                    example => 'pages=page1'
+            },
+            example    => 'page1'
+        }    
+    );
+
+
+my %param_uid = (
+        pattern       => $uid_match,                   
+        documentation => {
+            name        => 'uid',                                           
+            description => "ifname select which xxx" .
+                           "", 
+            in          => 'query',                                          
+            required    => false,                                           
+            schema      => {
+                    type    => 'string',                                     
+                    example => 'uid=userid'
+            },
+            example    => 'userid'
+        }    
+    );
+
+my %param_uuid = (
+        pattern       => $uuid_match,                   
+        documentation => {
+            name        => 'uuid',                                           
+            description => "uuid pattern match" .
+                           "", 
+            in          => 'query',                                          
+            required    => false,                                           
+            schema      => {
+                    type    => 'string',                                     
+                    example => 'uuid=1c2653d3-bd1d-4295-8cbe-74b45deae56f'
+            },
+            example    => '1c2653d3-bd1d-4295-8cbe-74b45deae56f'
+        }    
+    );
+
+
+my %param_mail = (
+        pattern       => $mail_match,                   
+        documentation => {
+            name        => 'mail',                                           
+            description => "A legal mail address" .
+                           "", 
+            in          => 'query',                                          
+            required    => false,                                           
+            schema      => {
+                    type    => 'string',                                     
+                    example => 'mail=username@globalconnect.no'
+            },
+            example    => 'username@globalconnect.no'
+        }    
+    );
+
+
+# {
+# 	my %resp = ();
+# 	my %Object = ();
+# 	
+# 	$Object{sessionid} = uuid::get_trace_id();
+# 	$Object{function} = 'function';
+# 	print "Hopp\n";
+# 	process_from_landing_page(\%Object,\%resp,'sigref');
+# 	print "Hei\n";
+# }
+# loop through all requests
+CGI::Dispatch::loop;
+
+
+# sub process_from_landing_page {
+# 	my $Object = shift;
+#     my $resp   = shift;     
+#     my $uid    = shift;	
+# 	
+# 	# SomeObject must contain uid
+# 	my $record = SessionFile::CreateRecord($Object->{sessionid});
+# 	# SomeObject must contain selected function
+# 	$record = SessionFile::UpdateRecord($record,'function', $Object->{function});
+# 	print "1.:" . Dumper $record;
+# 	my $result = SessionFile::StoreRecord($record);
+# 	print "2.:" . Dumper $record;
+# 
+# 	# Collect information from OSS LDAP
+# 	Authenticate::ldapLookupDeep($resp, $uid);
+# 	print "3.:" . Dumper $resp;
+# 	
+# 	# record must contain main roles from OSS LDAP?
+# 
+# 	# Collect information from AD controller
+#     my $ad_record = ADConnection::userlookup_ad($uid);
+# 		
+# 	# record must contain phone number
+# 	# record must contain mail address
+# 	$record = SessionFile::UpdateRecord($record,'mobile',  $ad_record->{ad_mobile});
+# 	$record = SessionFile::UpdateRecord($record,'mail',    $ad_record->{ad_mail});
+# 	$record = SessionFile::UpdateRecord($record,'manager', $ad_record->{ad_manager});
+#     
+# 	# Create OTP code 
+#     $Object->{otp} = Generator::getNewOTP();
+# 	# record must contain OTP code
+# 	# Store record
+# 	$record = SessionFile::UpdateRecord($record,'otp_token', $Object->{otp});
+# 	print "4.:" . Dumper $record;
+# 	$result = SessionFile::StoreRecord($record);
+#     $record = SessionFile::GetRecord($Object->{sessionid});
+# 	print "5.:" . Dumper $record;	
+# 	# Send OTP
+#     TokenAPI::OTPSendSMS($record->{mobile},$record->{otp_token});
+# 	# Serve OTP page
+#     SessionFile::DeleteRecord($Object->{sessionid});
+# }
+
+
+
+sub appdoc {
+    my $api = shift;
+
+    $api->{oas}{info}{title}       = $SystemName;
+    $api->{oas}{info}{description} = $SystemDescription;
+    $api->{oas}{info}{version}     = $version_string{version};
+
+    if ($config->{AUTHENTICATE} eq 'ON') {
+        $api->{oas}{components}{securitySchemes}{BasicAuth}{type}          = "http";
+        $api->{oas}{components}{securitySchemes}{BasicAuth}{scheme}        = "basic";
+        $api->{oas}{components}{securitySchemes}{BearerAuth}{type}         = "http";
+        $api->{oas}{components}{securitySchemes}{BearerAuth}{scheme}       = "bearer";
+        $api->{oas}{components}{securitySchemes}{BearerAuth}{bearerFormat} = "JWT";
+
+        #Global Authentication needed
+        $api->{oas}{security} = [{BasicAuth => []},{BearerAuth => []}];
+    }
+
+    # Tags to group API
+    my $t = 0;
+    if (defined($api->{oas}{tags})) {
+         $t = scalar @{$api->{oas}{tags}};
+    }
+    $api->{oas}{tags}[ $t   ]{name}        = 'Self Service';
+    $api->{oas}{tags}[ $t++ ]{description} = "Self Service creates an API and an application that can modify the openLDAP ";
+
+
+    push @{ $api->{oas}{servers} }, {
+        url         => 'http://selfservice.test.as2116.net/cgi-bin/app',
+        description => 'Optional server description, e.g. Internal staging server for testing'
+      };
+    push @{ $api->{oas}{servers} }, {
+        url         => 'http://selfservice.dev.as2116.net/cgi-bin/app',
+        description => 'Optional server description, e.g. Main (production) server'
+      };
+    return;  
+}
+
+sub landing_pages {
+    
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    
+    
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_pages,   \%resp, 'page',  ['GET'], false );
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], false );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+    allParametersUsed( $line, \%resp );
+    $resp{Params}{ page } = 'head';
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $resp{Params}{ page } );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub pages {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_pages,   \%resp, 'page',  ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], true );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $resp{Params}{ page } );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub changePW {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+    
+    my $line = $resp{Line};
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',    ['GET'], true );
+    
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+            ### Create new UUID / used for encryption
+            $resp{HeaderParams}{'X-TRACE-ID'} = uuid::get_trace_id(); 
+            my %Object = ();
+        	$Object{function}   = 'chpw';
+            $Object{sessionid}  = $resp{HeaderParams}{'X-TRACE-ID'};
+        	$Object{uid}        = $resp{Params}{uid};
+            $resp{Params}{uuid} = $Object{sessionid};
+            
+            my $record = SessionFile::CreateRecord($Object{sessionid});
+            $record    = SessionFile::UpdateRecord($record,'uid', $Object{uid});
+			
+			# Collect information from AD controller
+			my $ad_record = ADConnection::userlookup_ad($resp{Params}{ uid });
+			$resp{ad} = $ad_record;
+			$record = SessionFile::UpdateRecord($record,'resetuser', $resp{Params}{ uid });
+			$record = SessionFile::UpdateRecord($record,'mobile',    $ad_record->{ad_mobile});
+			$record = SessionFile::UpdateRecord($record,'mail',      $ad_record->{ad_mail});
+
+			# Collect information from OSS LDAP slave
+			my %ldap = ();
+			Authenticate::ldapLookupDeep(\%ldap, $resp{Params}{ uid });
+			
+			# Select password complexity level
+			my $level  = getAccessLevel(\%ldap);
+			$record = SessionFile::UpdateRecord($record,'level',    $level);	
+			
+            my $result = SessionFile::StoreRecord($record);
+            logtosys('warning', "Failed to store record") if ($result == 0);
+            
+			#$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			$resp{strength} = $level;
+
+			my $printPage   = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'two' );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+
+		}
+    }
+    return(finelizeRequest(\%resp)); 
+}
+
+sub getOTP {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{post}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{post}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{post}{operationId} = NextId('Self Service');
+    $resp{Documentation}{post}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'POST','200 404 500');   
+
+    my $line = $resp{Line};
+    $line = getSingleValueParams( $line, \%param_pages,   \%resp, 'page',   ['POST'], true );
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',    ['POST'], true );
+    $line = getSingleValueParams( $line, \%param_psw,     \%resp, 'psw0',   ['POST'], true );
+    $line = getSingleValueParams( $line, \%param_psw,     \%resp, 'psw1',   ['POST'], true );
+    $line = getSingleValueParams( $line, \%param_uuid,    \%resp, 'uuid',   ['POST'], true );
+    
+    if ($ENV{'REQUEST_METHOD'} eq 'POST' ) {
+        $resp{Params}{ page } = $httpreq->param('page');            # next page? three if OK
+        $resp{Params}{ uid  } = $httpreq->param('usrname');
+        $resp{Params}{ psw0 } = $httpreq->param('psw0');
+        $resp{Params}{ psw1 } = $httpreq->param('psw1');
+        $resp{Params}{ psw2 } = $httpreq->param('psw2');
+        $resp{Params}{ uuid } = $httpreq->param('uuid');
+        
+        $resp{Params}{ psw0 }  = StringCrypt::myencrypt($resp{Params}{ uuid },$resp{Params}{ psw0 } );
+        $resp{Params}{ psw1 }  = StringCrypt::myencrypt($resp{Params}{ uuid },$resp{Params}{ psw1 } );
+    } 
+    
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['POST'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['POST'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['POST'] );
+
+    allParametersUsed( $line, \%resp );
+
+	#$resp{HTTPREQUST}=$httpreq;
+	#print Dumper $request;
+
+	my $printPage = undef;
+
+    if ( !defined( $resp{api} ) ) {
+		if ($ENV{'REQUEST_METHOD'} eq 'POST' ) {
+			### We need to know wich page got us here:
+			my $nextPage = '';
+			if    ($resp{Headers}{HTTP_REFERER} =~ /recoverLink/ ) { $nextPage = 'mailsent'; }
+			elsif ($resp{Headers}{HTTP_REFERER} =~ /changePW/    ) { $nextPage = 'two';      }
+			
+			my ($result,$record) = SessionFile::GetRecord($resp{Params}{ uuid });
+            if ($result == 0) {
+                logtosys('err',     "GetRecord failed with uuid: " . $resp{Params}{ uuid });
+                my $printPage = undef;
+                ( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'head' );
+                return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+            }            
+			
+            # Update record
+			$record = SessionFile::UpdateRecord($record,'nextPage',  $nextPage);
+			$record = SessionFile::UpdateRecord($record,'oldpasswd', $resp{Params}{ psw0 });
+			$record = SessionFile::UpdateRecord($record,'newpasswd', $resp{Params}{ psw1 });
+			
+			
+			# Collect information from AD controller
+			my $ad_record = ADConnection::userlookup_ad($resp{Params}{ uid });
+			$resp{ad} = $ad_record;
+			$record = SessionFile::UpdateRecord($record,'mobile',  $ad_record->{ad_mobile});
+			$record = SessionFile::UpdateRecord($record,'mail',    $ad_record->{ad_mail});
+			my %ldap = ();
+			Authenticate::ldapLookupDeep(\%ldap, $resp{Params}{ uid });
+			$resp{ldap} = \%ldap;
+			$resp{session_record} = $record;
+        
+			# strengthcheck
+			$resp{level} = getAccessLevel(\%ldap);
+			$record = SessionFile::UpdateRecord($record,'level',  $resp{level});
+			
+			($resp{check}{strength},$resp{check}{score},$resp{check}{crack_times},$resp{check}{libraries}) = 
+												strengthcheck::testPW (\%resp, StringCrypt::mydecrypt($resp{Params}{ uuid },$resp{Params}{ psw1 } ));
+			
+			# print STDERR Dumper \$resp{check};
+			my $libstr = undef;
+			for my $libs (keys %{$resp{check}{libraries}}) {
+				next if (!($libs =~ /passwords/));
+				if (defined($libstr)) {$libstr .= '<br>';}
+				$libstr .= $resp{check}{libraries}{$libs}{token} . ": found in library " . $resp{check}{libraries}{$libs}{library};
+			}
+			$resp{check}{libraryList} = $libstr;
+			
+	        if ($resp{check}{strength} eq 'Failed' ) {
+					# Store updated
+					$record = SessionFile::UpdateRecord($record,'nextPage',  $nextPage);
+					$resp{result} = SessionFile::StoreRecord($record);
+                    logtosys('warning', "Failed to store record") if ($resp{result} == 0);
+					( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'weak' );
+					return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));				
+		    } elsif ($resp{check}{strength} eq 'Accepted' ) {
+				# check new password with
+                my $resultAD = ADConnection::Authenticate($resp{Params}{ uid  },StringCrypt::mydecrypt($resp{Params}{ uuid },$resp{Params}{ psw1 } ));
+                if ($resultAD == 1 and (($resp{level} eq 'GROUPADMINPW') or ($resp{level} eq 'GROUPSUPERPW'))) {
+                    # Store updated
+                    $record = SessionFile::UpdateRecord($record, 'nextPage', $nextPage);
+                    $resp{result} = SessionFile::StoreRecord($record);
+                    logtosys('warning', "Failed to store record") if ($resp{result} == 0);
+                    ( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'failedad' );   
+                    return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+                }
+                # Create OTP code 
+                my $otp = Generator::getNewOTP();
+                $record = SessionFile::UpdateRecord($record,'nextPage', $nextPage);
+                $otp    = StringCrypt::myencrypt($resp{Params}{ uuid }, $otp );
+                $record = SessionFile::UpdateRecord($record,'otp_token', $otp);
+                # Store updated
+                $resp{result} = SessionFile::StoreRecord($record);
+                logtosys('warning', "Failed to store record") if ($resp{result} == 0);
+                # Send OTP
+                $resp{otp_response} = TokenAPI::OTPSendSMS($record->{mobile},  
+                                      StringCrypt::mydecrypt($resp{Params}{ uuid },$otp )) if (defined($record->{mobile}));
+                $resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+                ( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $resp{Params}{ page } );
+                return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+                
+			} 
+		}
+    }
+	( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'weakxxx' );
+	return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+    #return(finelizeRequest(\%resp)); 
+}
+
+sub setNewPW {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_pages,   \%resp, 'page',  ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], true );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $resp{Params}{ page } );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			print "Not Her\n";
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub backToSetPw {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_uuid,     \%resp, 'uuid', ['GET'], true );
+    
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+    
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+            my $servepage = 'head';
+            
+            my ($result,$record) = SessionFile::GetRecord($resp{Params}{ uuid });
+            if ($result == 0) {
+                logtosys('err',     "GetRecord failed with uuid: " . $resp{Params}{ uuid });
+                my $printPage = undef;
+                ( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'head' );
+                return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+            } 
+            
+            # Delete current password if present
+            $record = SessionFile::UpdateRecord($record,'oldpasswd', undef ) if (defined ($record->{oldpasswd}));
+            # Delete new password
+            $record = SessionFile::UpdateRecord($record,'newpasswd', undef ) ;
+            
+            # set page parameters
+            $resp{strength} = $record->{level};
+            
+            
+            # Select page to present 
+            if ($record->{resetuser} eq 'admin')                 { $servepage = 'four';}
+            elsif ($record->{resetuser} eq $resp{Params}{ uid }) { $servepage = 'two';}
+            else  { $servepage = 'head';
+                $record = SessionFile::UpdateRecord($record,'newpasswd', undef ) ;
+            }
+            
+            # Save current record befare serving page
+            $result = SessionFile::StoreRecord($record);
+            logtosys('warning', "Failed to store record") if ($result);
+            
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $servepage );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+        }
+    }
+    return(finelizeRequest(\%resp)); 
+}
+
+sub recoverPW {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], true );
+
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+
+           ### Create new UUID / used for encryption
+            $resp{HeaderParams}{'X-TRACE-ID'} = uuid::get_trace_id(); 
+            my %Object = ();
+        	$Object{function}   = 'chpw';
+            $Object{sessionid}  = $resp{HeaderParams}{'X-TRACE-ID'};
+        	$Object{uid}        = $resp{Params}{uid};
+            $resp{Params}{uuid} = $Object{sessionid};
+            
+            my $record = SessionFile::CreateRecord($Object{sessionid});
+            $record    = SessionFile::UpdateRecord($record,'uid', $Object{uid});
+            my $result = SessionFile::StoreRecord($record);
+            logtosys('warning', "Failed to store record") if ($result);
+            
+			$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'zero' );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub recoverLink {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_link,     \%resp, 'link',   ['GET'], true );
+	
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			# get record from session file based on link parameter
+
+			my ($result,$record) = SessionFile::GetRecordWithKey('url_token',$resp{Params}{ link });
+			if ($result != 0) {
+				$record = SessionFile::UpdateRecord($record,'reset', 'OK');
+				
+				$resp{Params}{uuid} = $record->{sessionid};				 
+				$resp{Params}{uid}  = $record->{uid};
+
+				# Collect information from OSS LDAP slave
+				my %ldap = ();
+				# Select password complexity level
+
+				Authenticate::ldapLookupDeep(\%ldap, $resp{Params}{uid});				
+				my $level  = getAccessLevel(\%ldap);
+				$record = SessionFile::UpdateRecord($record,'level',    $level);	
+				$resp{strength} = $level;
+
+				$resp{result} = SessionFile::StoreRecord($record);
+                logtosys('warning', "Failed to store record") if ($resp{result} == 0);
+				
+				my $printPage = undef;
+				#### Page for new passwords
+				( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'four' );
+				return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			} else {
+				# Fail page
+                logtosys('err',     "GetRecord failed with url_token: " . $resp{Params}{ link });
+				my $printPage = undef;
+				( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'failed' );
+				return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			}
+		}
+    }
+    return(finelizeRequest(\%resp)); 
+}
+
+sub mailLink {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+ #  $resp{Documentation}{post}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+ #  $resp{Documentation}{post}{description} = 'Optional extended description in CommonMark or HTML';
+ #  $resp{Documentation}{post}{operationId} = NextId('Self Service');
+ #  $resp{Documentation}{post}{tags}        = ['Self Service'];
+ #  AddResponseDoc(\%resp,'POST','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_uid,      \%resp, 'uid',   ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_mail,     \%resp, 'mail',  ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_uuid,     \%resp, 'uuid',  ['GET'], true );
+	
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    #allParametersUsed( $line, \%resp );
+	
+ #  if ($ENV{'REQUEST_METHOD'} eq 'POST' ) {
+ #      $resp{Params}{ postdata }        = $httpreq->param('POSTDATA');
+ #      $resp{Params}{ postdata_length } = $ENV{'CONTENT_LENGTH'};
+ #      $resp{Params}{ postdata_type   } = $ENV{'CONTENT_TYPE'};
+ #      $resp{Params}{ uid  } = $httpreq->param('usrname');
+ #      $resp{Params}{ mail } = $httpreq->param('mail');
+ #      $resp{Params}{ uuid } = $httpreq->param('uuid');
+ #  } 
+	
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			my ($result,$record) = SessionFile::GetRecord($resp{Params}{ uuid });	
+
+			# Generate link
+			# 
+			my $url = Generator::getNewURL();
+			
+			#$url    = StringCrypt::myencrypt($resp{Params}{ uuid },$url );
+      	    $record = SessionFile::UpdateRecord($record,'url_token', $url);
+            if ($result == 0) {
+                logtosys('err',     "GetRecord failed with uuid: " . $resp{Params}{ uuid });
+                my $printPage = undef;
+                ( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'head' );
+                return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+            }            
+			
+			$resp{mailreplace}{RESETLINK} = $config->{RESETLINK} . '' . '?link=' . $url;
+			$resp{mailreplace}{USERNAME}  = $resp{Params}{ mail };
+			
+			# Lookup AD
+			# Collect information from AD controller
+			my $ad_record = ADConnection::userlookup_ad($resp{Params}{ uid });
+			$resp{ad} = $ad_record;
+			$record = SessionFile::UpdateRecord($record,'mobile',     $ad_record->{ad_mobile});
+			$record = SessionFile::UpdateRecord($record,'resetuser', 'admin');
+			$record = SessionFile::UpdateRecord($record,'mail',       $ad_record->{ad_mail});
+			
+			# Where to send the mail
+			$resp{mailTo}      = $ad_record->{ad_mail};
+			$resp{mailSubject} = $config->{MAILSUBJECT};
+			$resp{mailFrom}    = $config->{MAILFROM};
+
+			# Lookup LDAP
+			my %ldap = ();
+			Authenticate::ldapLookupDeep(\%ldap, $resp{Params}{ uid });
+			
+			# Store record the updated record
+			$resp{result} = SessionFile::StoreRecord($record);
+            logtosys('warning', "Failed to store record") if ($resp{result} == 0);
+			
+			$resp{ldap} = \%ldap;                                    # is this needed?
+			# $resp{session_record} = $record;			
+		    $resp{mailTemplate} = $config->{MAILTEMPLATERESETLINK};
+			
+			# Verify mail
+			if ($record->{mail} eq  $resp{Params}{ mail }) {
+				$resp{mailcompare} = 'OK';
+				# 
+				# Mail link
+				my $mailSentOk = Mail::createAndSendMail(\%resp);
+				#
+
+				my $printPage = undef;
+				( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'mailsent' );
+				return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			} else {
+			}
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub complete {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{post}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{post}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{post}{operationId} = NextId('Self Service');
+    $resp{Documentation}{post}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'POST','200 404 500');   
+
+    my $line = $resp{Line};
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'usrname',    ['POST'], true );
+    $line = getSingleValueParams( $line, \%param_psw,     \%resp, 'uuid',       ['POST'], true );
+    $line = getSingleValueParams( $line, \%param_psw,     \%resp, 'otp',        ['POST'], true );
+    
+    if ($ENV{'REQUEST_METHOD'} eq 'POST' ) {
+        $resp{Params}{ postdata }        = $httpreq->param('POSTDATA');
+        $resp{Params}{ postdata_length } = $ENV{'CONTENT_LENGTH'};
+        $resp{Params}{ postdata_type   } = $ENV{'CONTENT_TYPE'};
+        $resp{Params}{ uid  } = $httpreq->param('usrname');
+        $resp{Params}{ uuid } = $httpreq->param('uuid');
+        $resp{Params}{ otp  } = $httpreq->param('otp');
+    } 
+    
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['POST'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['POST'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['POST'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'POST' ) {
+            my ($result,$record) = SessionFile::GetRecord($resp{Params}{ uuid });
+			if ($result == 1 and defined($record) ) {
+                
+				$resp{record_result}             = $result;
+				$resp{record}{otp_compare}       = (StringCrypt::mydecrypt($record->{sessionid}, $record->{otp_token}) eq $resp{Params}{ otp  }) ? "OK": "Fail";
+                # Only if changed by user
+                if ($record->{resetuser} ne 'admin')  {
+                    $resp{record}{ldap_athenticated} = Authenticate::ldapAuthenticate(\%resp, $record->{uid}, StringCrypt::mydecrypt($record->{sessionid}, $record->{oldpasswd}));
+                } else {
+                    $resp{record}{ldap_athenticated} = 1;
+                }
+                
+                if ($record->{level} eq 'GROUPADMINPW') {
+				$resp{record}{ad_athenticated}   = ADConnection::Authenticate    ($record->{uid}, StringCrypt::mydecrypt($record->{sessionid}, $record->{newpasswd}));
+                } else {
+                    $resp{record}{ad_athenticated}   = 0;
+                }
+								
+				# Check that all is OK
+				my $printPage = undef;
+				if (( $resp{record}{otp_compare}       eq "OK") and        # Correct token
+					( $resp{record}{ldap_athenticated} eq "1")  and        # Correct old password 
+					( $resp{record}{ad_athenticated}   eq "0")) {          # Failed as expected
+				#    prepare the magic    
+					( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( "completed" );
+				} else {
+					( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( "failed" );
+				}
+                
+                ### Set password
+                ### 
+				
+				SessionFile::DeleteRecord($resp{Params}{ uuid });
+				return (finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			} else {
+                logtosys('err',     "GetRecord failed with uuid: " . $resp{Params}{ uuid });
+                my $printPage = undef;
+                ( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( 'head' );
+                return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+            }
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub fail {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_pages,   \%resp, 'page',  ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], true );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $resp{Params}{ page } );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			print "Not Her\n";
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub timeout {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+
+    $resp{Documentation}{get}{summary}     = 'A generic lookup of count into a given table based on a single key in one column';
+    $resp{Documentation}{get}{description} = 'Optional extended description in CommonMark or HTML';
+    $resp{Documentation}{get}{operationId} = NextId('Self Service');
+    $resp{Documentation}{get}{tags}        = ['Self Service'];
+    AddResponseDoc(\%resp,'GET','200 404 500');   
+
+    my $line = $resp{Line};
+
+    $line = getSingleValueParams( $line, \%param_pages,   \%resp, 'page',  ['GET'], true );
+    $line = getSingleValueParams( $line, \%param_uid,     \%resp, 'uid',   ['GET'], true );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_request_id, \%resp, 'X-Request-ID', ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_trace_id,   \%resp, 'X-TRACE-ID',   ['GET'] );
+    CommonApiHandler::getHeaderValueParams( \%CommonApiHandler::param_accept,     \%resp, 'HTTP-ACCEPT',  ['GET'] );
+
+    allParametersUsed( $line, \%resp );
+
+    if ( !defined( $resp{api} ) ) {
+		if ( $ENV{'REQUEST_METHOD'} eq 'GET' ) {
+			$resp{Params}{page} = uri_unescape($resp{Params}{page}); 
+			my $printPage = undef;
+			( $resp{status}, $resp{results}{txt}, $printPage ) = Pages::pages( $resp{Params}{ page } );
+			return(finelizeRequest(\%resp, $printPage,'text/html')) if (defined($printPage));
+			print "Not Her\n";
+		}
+    }
+    
+    return(finelizeRequest(\%resp)); 
+}
+
+sub getAccessLevel {
+	my $ldap = shift;
+
+	if (!defined($ldap->{Authorizations})) {return 'GROUPUSERPW';}
+
+	my %levels = ();
+	for (my $i = 0;$i < scalar @{$ldap->{Authorizations}{oss_ldap}{auth}};$i++) {
+		for my $levelgroup (keys %{$config->{PASSWORDLEVEL}}) {
+			for (my $s = 0;$s < scalar @{$config->{PASSWORDLEVEL}{$levelgroup}};$s++) {
+				if ($config->{PASSWORDLEVEL}{$levelgroup}[$s] eq $ldap->{Authorizations}{oss_ldap}{auth}[$i]) {
+					$levels{$levelgroup}++;
+				}  else {
+					$levels{othergroup}++;
+				}  
+			}
+		}		
+	}		
+	for (my $i = 0;$i < scalar @{$ldap->{Authorizations}{oss_ldap}{roles}};$i++) {
+		for my $levelgroup (keys %{$config->{PASSWORDLEVEL}}) {
+			for (my $s = 0;$s < scalar @{$config->{PASSWORDLEVEL}{$levelgroup}};$s++) {
+				if ($config->{PASSWORDLEVEL}{$levelgroup}[$s] eq $ldap->{Authorizations}{oss_ldap}{roles}[$i]) {
+					$levels{$levelgroup}++;
+				}  else {
+					$levels{othergroup}++;
+				}
+			}
+		}
+	}
+	
+	if    ($levels{GROUPAPIPW} > 0 and !defined($levels{othergroup})) { return 'GROUPAPIPW';} # API USERS
+	elsif ($levels{GROUPADMINPW} > 0) {return 'GROUPADMINPW';}                                # ADMIN LEVEL  
+	elsif ($levels{GROUPSUPERPW} > 0) {return 'GROUPSUPERPW';}                                # SUPER USERS
+	else  {return 'GROUPUSERPW';}                                                             # NORMAL USERS
+}
+
+sub GlobalConfig {
+
+    my %conf;
+    my $confobj;
+    my $filename = 'config.txt';
+    my $confpath = $FindBin::Bin . "/../config";
+
+    my $realconf     = $confpath . '/' . $filename;
+    my $testconfpath = '../config';
+    my $testconf     = $testconfpath . '/' . $filename;
+
+    if ( -e $testconf ) {
+        $confobj = new Config::General($testconf);
+
+        #print "$ApplicationName startet med test konfigurering fra fil: " . $testconf . "\n";
+    } else {
+        unless ( -e $realconf ) {
+            print "\n"
+              . "  Konfigurasjonsfilen $realconf finnes ikke. \n"
+              . "  Kopier fra $ApplicationPath../configuration/application-config.conf \n"
+              . "  til $realconf\n"
+              . "  Rediger og tilpass etter kopiering." . "\n\n";
+            die;
+        }
+        $confobj = new Config::General($realconf);
+    }
+
+    %conf   = $confobj->getall;
+    $config = \%conf;
+    
+
+    if ( !defined( $config->{AUTHENTICATE}) )  {
+        $config->{AUTHENTICATE} = 'ON'; 
+    }
+    
+    @{$config->{METHODS}} = qw ( GET POST  PUT PATCH  DELETE );
+    if ( defined( $config->{LOGLEVELFILE} )) {
+        $config->{LOGLEVELFILE} = $FindBin::Bin . '/' . $config->{LOGLEVELFILE};
+    }
+    if ( defined( $config->{LOGFILENAME} )) {
+        $config->{LOGFILENAME} = $FindBin::Bin . '/' . $config->{LOGFILENAME};
+    }
+    
+    $config->{SystemName} = $SystemName;
+    
+    if ( defined( $config->{LOGLEVELFILE} ) and ( -s $config->{LOGLEVELFILE} ) ) {
+        open( my $FH, '<', $config->{LOGLEVELFILE} ) or die $!;
+        while (<$FH>) {
+            chomp $_;
+            if ( $_ =~ /^\s*#/ )                                               { next; }
+            if ( $_ =~ /^\s*(OFF|FATAL|ERROR|WARN|INFO|DEBUG|TRACE|ALL)\s*$/ ) { $config->{LOGLEVEL} = $1; }
+        }
+        close $FH;
+    }
+	#print Dumper $config;
+    delete $config->{CONFIG};  
+}
+

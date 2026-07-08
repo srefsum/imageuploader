@@ -1,0 +1,410 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Data::Dumper;
+
+use CGI;
+use File::Spec;
+use File::MimeInfo; # To automatically detect image type
+use URI::Escape;
+
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+local $Data::Dumper::Sortkeys = 1; # Sorts the hash keys alphabetically
+local $Data::Dumper::Terse    = 1; # Removes the $VAR1 variable name wrapper
+local $Data::Dumper::Indent   = 2; # Standard readable indentation (Default)
+
+$CGI::DISABLE_UPLOADS = 0;
+$CGI::POST_MAX        = 1024 * 1024 * 20; # Limit to 20MB total
+
+
+use CGI::Dispatch 'url';
+use upload;
+use serve;
+
+my $hostIP = getHostIPAdress();
+
+# Define a strict map of allowed target paths on the server
+our %allowed_dirs = (
+    'images'    => { directory => '/var/www/images/gallery1',description => 'Images Directory' , showsubdirs => "Yes" },
+    'uploads'   => { directory => '/var/www/images/uploads', description => 'Upload Directory' , showsubdirs => "No" },
+    'logos'     => { directory => '/var/www/images/logos',   description => 'Logo Directory'   , showsubdirs => "No" }
+);
+
+url "/index"      => \&index,          REQUEST_METHOD => ['GET'];
+url "/getupload"  => \&getupload,      REQUEST_METHOD => ['GET'];
+url "/upload"     => \&upload,         REQUEST_METHOD => ['POST'];
+url "/serve"      => \&serve,          REQUEST_METHOD => ['GET'];
+url "/show"       => \&show,           REQUEST_METHOD => ['GET'];
+url "/create"     => \&createDir,      REQUEST_METHOD => ['POST'];
+url "/"           => "redirect http://$hostIP:9000";
+
+
+  
+CGI::Dispatch::loop();
+
+sub getHostIPAdress {
+ 
+    my $ip_pattern = qr /inet (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\//;
+    my $host_ip_address;
+    my $ip_string = `ip -4 -o addr show eth0`;
+    #print $ip_string . "\n";
+    if ($ip_string =~ /$ip_pattern/) {
+        $host_ip_address=$1;
+    }
+
+    return $host_ip_address;
+}
+
+
+sub get_http_headers {
+    my $httpreq  = shift;
+    my $headers  = shift;
+    
+    my %head  = map {$_ => $httpreq->http($_)} $httpreq->http();
+    
+    for my $h (keys %head) {
+        $headers->{$h} = $head{$h};
+    }
+}
+
+
+sub me {
+    my $m = (caller(2))[3];
+    $m =~ s/main\:\://;
+    return($m);
+}
+
+sub url_decode {
+    my $rv = shift;
+    $rv =~ tr/+/ /;
+    $rv =~ s/\%([a-f\d]{2})/ pack 'C', hex $1 /geix;
+    return $rv;
+}
+
+
+sub preInit {
+    my $request  = shift;
+    my $httpreq  = shift;
+    
+    my ($schemas)  = scalar $httpreq->param('SCHEME');
+    my ($postdata) = scalar $httpreq->param('POSTDATA');
+    my ($putdata)  = scalar $httpreq->param('PUTDATA');
+    
+    my %resp       = (
+       # 'Version'   => $main::version_string{version},
+       # '@Starttime' => gclog::gctime(),
+       # 'StartTime'  => gclog::start_time(),
+        'Request' => {
+            'Function'        => me(),
+            'Query'           => $ENV{'QUERY_STRING'},
+            'Url'             => $ENV{'PATH_INFO'},
+            'Request_Method'  => $ENV{'REQUEST_METHOD'},
+            'schema'          => $schemas,
+           },
+        'Params'     => {
+        },
+        'Headers'    => {
+        },
+    );
+    
+    $resp{Request}{remote_addr}        =  $ENV{'REMOTE_ADDR'} if (defined($ENV{'REMOTE_ADDR'}));
+    $resp{Request}{remote_host}        =  $ENV{'REMOTE_HOST'} if (defined($ENV{'REMOTE_HOST'}));
+    $resp{Request}{remote_user}        =  $ENV{'REMOTE_USER'} if (defined($ENV{'REMOTE_USER'}));
+    $resp{Request}{server_name}        =  $ENV{'SERVER_NAME'} if (defined($ENV{'SERVER_NAME'}));
+    $resp{Request}{server_port}        =  $ENV{'SERVER_PORT'} if (defined($ENV{'SERVER_PORT'}));
+    
+    # This is a fix between the server called version and the command line called version.
+    # The command line version will get the query string as part of the $ENV{'PATH_INFO'}
+    # The server version will get the query string as part of the $ENV{'QUERY_STRING'}
+    
+    $resp{Line} = (defined($ENV{'QUERY_STRING'}) and ($ENV{'QUERY_STRING'} ne '')) ?  $ENV{'PATH_INFO'} . '?' . $ENV{'QUERY_STRING'} : $ENV{'PATH_INFO'};
+	#$resp{Request}{postdata} = $postdata;
+	#$resp{Request}{putdata} = $putdata;
+
+    
+    $resp{Line} = url_decode($resp{Line}); 
+    
+    if (defined($httpreq)) {
+        get_http_headers($httpreq,$resp{Headers});
+    }
+    # print Dumper \%resp;
+    return \%resp;
+}
+
+sub createOptions {
+    my $string = "";
+    for my $entry (keys %allowed_dirs) {
+        $string .= sprintf ("<option value=\"%s\">%s</option>\n",$entry ,$allowed_dirs{$entry}{description});
+    }
+        
+    return $string;
+}
+
+
+sub getupload {
+    my ($request, $httpreq) = @_;
+    my %resp  = %{preInit($request, $httpreq)};
+
+    print http_header_html();
+    #print Dumper \%resp;
+    
+    $resp{variables}{options} =  createOptions();
+    print ProcessFileandPrint(\%resp,'../templates/upload.html');    
+   
+}
+
+sub ProcessFileandPrint {
+    my $resp     = shift;
+    my $filename = shift;
+    my $indent   = shift;
+    $indent //= "";
+    
+    
+    my $output_string = "";
+    
+    # 1. Open the file securely using 3-argument open and lexical filehandle
+    open(my $string_fh, '>', \$output_string) or die "Cannot open: $!";
+    open(my $fh, '<:encoding(UTF-8)', $filename) 
+        or die "Could not open file '$filename': $!";
+
+    # 2. Read line by line
+    while (my $line = <$fh>) {
+        chomp $line; # Removes the trailing newline character (\n)
+        
+        
+        # Process your line here
+        if ($line =~ /^\#include\s+\"(.*)\"$/) {
+            # print $string_fh $1 . "\n";
+            print $string_fh ProcessFileandPrint($resp,$1,$indent);
+        } elsif ($line =~ /^\#replace\s+\"(.*)\"$/) {
+            my $tmp = $resp->{variables}{$1};
+            $tmp =~ s/^/$indent/gm;
+            print $string_fh $tmp;
+        } else {
+            $line =~ /^(\s+)/;
+            $indent = $1;
+            print $string_fh "$line\n";
+        }
+    }
+
+    # 3. Close the file handle
+    close($fh);
+    close($string_fh);
+    # print "Captured output:\n" . $output_string;
+    return $output_string;
+}
+
+
+sub index {
+    my ($request, $httpreq) = @_;
+    my %resp  = %{preInit($request, $httpreq)};
+    print http_header_html();
+    printLandingPage();
+}
+
+sub upload {
+    my ($request, $httpreq) = @_;
+    my %resp  = %{preInit($request, $httpreq)};
+    my $line = $resp{Line};
+    
+    print http_header_html();
+    # print Dumper $httpreq;
+    
+    my $category = $httpreq->param('category');
+    $resp{Params}{dir_key} = $category;
+    $resp{Params}{directory} = $allowed_dirs{$category}{directory};
+    
+    my $filename = $httpreq->param('filename');
+    $resp{Params}{file} = $filename;
+
+    my $subdir = $httpreq->param('sub');
+    if (defined($subdir)) {
+        $resp{Params}{sub} = $subdir;
+    }
+    
+    # print Dumper \%resp;
+    upload::upload(\%resp,$httpreq);
+}
+
+sub createDir {
+    my ($request, $httpreq) = @_;
+    my %resp  = %{preInit($request, $httpreq)};
+
+    print http_header_html();
+    # print Dumper $httpreq;
+    # print Dumper \%resp;
+
+    my $category = $httpreq->param('current_dir');
+    $resp{Params}{folder} = $category;
+    $resp{Params}{directory} = $allowed_dirs{$category}{directory};
+
+    my $subdir = $httpreq->param('new_dir');
+    $resp{Params}{sub} = $subdir;
+    print Dumper \%resp;
+    if (defined($subdir)) {
+        my $newdir = $resp{Params}{directory} . '/' . $resp{Params}{sub};
+        mkdir($newdir) or die "Failed to create directory: $!";
+    }
+    
+    serve::showImages(\%resp,$httpreq);
+}
+
+sub show {
+    my ($request, $httpreq) = @_;
+    my %resp  = %{preInit($request, $httpreq)};
+    # print http_header_html();
+    my $line = $resp{Line};
+    
+    # print $line . "<br>";
+    if ($line =~ /[?&]directory=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $resp{Params}{folder} = $1;
+    } else {
+        
+    }
+    if ($line =~ /[?&]sub=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $resp{Params}{sub} = $1;
+    }
+    serve::showImages(\%resp,$httpreq);
+}
+
+sub serve {
+    my ($request, $httpreq) = @_;
+    my %resp  = %{preInit($request, $httpreq)};
+    # print http_header_html();
+    my $line = $resp{Line};
+    
+    # print $line . "<br>";
+    if ($line =~ /[?&]directory=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $resp{Params}{directory} = $1;
+    } else {
+        
+    }
+    if ($line =~ /[?&]file=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $resp{Params}{file} = $1;
+    } else {
+        
+    }
+    if ($line =~ /[?&]sub=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $resp{Params}{sub} = $1;
+    }
+    
+    # print Dumper \%resp;
+    serve::serve(\%resp,$httpreq);
+    
+}
+
+
+
+
+sub http_header_html {
+    return CGI::header(
+        -status                      => 200,
+        -type                        => 'text/html',
+        -charset                     => 'utf-8',
+        -Access_Control_Allow_Origin => '*'
+    );
+}
+
+# Print the HTML document
+sub printLandingPage {
+    print <<'HTML';
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to Our Perl CGI App</title>
+        <style>
+            :root {
+                --primary: #4CAF50;
+                --dark: #333;
+                --light: #f4f4f4;
+            }
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                margin: 0;
+                padding: 0;
+                color: var(--dark);
+                line-height: 1.6;
+            }
+            header {
+                background: var(--dark);
+                color: #fff;
+                padding: 2rem 0;
+                text-align: center;
+            }
+            .container {
+                width: 80%;
+                margin: auto;
+                overflow: hidden;
+                padding: 3rem 1rem;
+            }
+            .btn {
+                display: inline-block;
+                background: var(--primary);
+                color: #fff;
+                padding: 0.8rem 2rem;
+                text-decoration: none;
+                border-radius: 5px;
+                font-weight: bold;
+                margin-top: 1rem;
+                transition: background 0.3s ease;
+            }
+            .btn:hover {
+                background: #45a049;
+            }
+            .features {
+                display: flex;
+                justify-content: space-around;
+                margin-top: 2rem;
+            }
+            .feature-box {
+                background: var(--light);
+                padding: 1.5rem;
+                width: 30%;
+                border-radius: 5px;
+                text-align: center;
+            }
+        </style>
+    </head>
+    <body>
+
+        <header>
+            <div class="container">
+                <h1>Dynamic Perl CGI Engine</h1>
+                <p>Serving this page dynamically via a Common Gateway Interface script.</p>
+                <a href="#features" class="btn">Explore Features</a>
+            </div>
+        </header>
+
+        <div class="container" id="features">
+            <div class="features">
+                <div class="feature-box">
+                    <h3>Fast</h3>
+                    <p>Perl runs compiled at the speed of the system interpreter, making it an excellent lightweight backend.</p>
+                </div>
+                <div class="feature-box">
+                    <h3>Secure</h3>
+                    <p>Leverage the robust system security features native to your Linux/Unix web server environment.</p>
+                </div>
+                <div class="feature-box">
+                    <h3>Simple</h3>
+                    <p>Deploy landing pages and APIs instantly without heavyweight Node or Python environments.</p>
+                </div>
+            </div>
+        </div>
+
+    </body>
+    </html>
+HTML
+
+}
+
+1;
+
+
+
+

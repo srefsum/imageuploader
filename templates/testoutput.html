@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+</head>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>File Upload to Different Directories</title>
+        <style>
+            :root {
+                --primary: #4CAF50;
+                --dark: #333;
+                --light: #f4f4f4;
+            }
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                margin: 0;
+                padding: 0;
+                color: var(--dark);
+                line-height: 1.6;
+            }
+            header {
+                background: var(--dark);
+                color: #fff;
+                padding: 2rem 0;
+                text-align: center;
+            }
+            .container {
+                width: 80%;
+                margin: auto;
+                overflow: hidden;
+                padding: 3rem 1rem;
+            }
+            .btn {
+                display: inline-block;
+                background: var(--primary);
+                color: #fff;
+                padding: 0.8rem 2rem;
+                text-decoration: none;
+                border-radius: 5px;
+                font-weight: bold;
+                margin-top: 1rem;
+                transition: background 0.3s ease;
+            }
+            .btn:hover {
+                background: #45a049;
+            }
+            .features {
+                display: flex;
+                justify-content: space-around;
+                margin-top: 2rem;
+            }
+            .feature-box {
+                background: var(--light);
+                padding: 1.5rem;
+                width: 30%;
+                border-radius: 5px;
+                text-align: center;
+            }
+        </style>
+    </head>
+
+    <body>
+       <header>
+            <div class="container">
+                <h1>Dynamic Perl CGI Engine</h1>
+                <p>Serving this page dynamically via a Common Gateway Interface script.</p>
+                <a href="#features" class="btn">Explore Features</a>
+            </div>
+        </header>
+
+        <div class="container" id="features">
+            <div class="features">
+                <div class="feature-box">
+                <form action="/upload" method="post" enctype="multipart/form-data">
+
+                    <!-- Dropdown to select the target directory type -->
+                    <label for="category">Choose Destination Directory:</label>
+                    <select name="category" id="category">
+                    <option value="images">Images Directory</option>
+                    <option value="uploads">Upload Directory</option>
+                    <option value="logos">Logo Directory</option>
+                    </select>
+                    <br><br>
+
+                    <!-- File input field -->
+                    <label for="filename">Select File:</label>
+                    <input type="file" name="filename" id="filename" />
+                    <br><br>
+
+                    <input type="submit" value="Upload File" />
+                </form>
+                </div>
+            </div>
+        </div>
+
+    </body>
+</html>
