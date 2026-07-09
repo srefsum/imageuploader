@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>
+#replace "title"
+    </title>
+    <style>
+#include "../templates/style.html"
+    </style>
+</head>
+<body>
+    <header class="site-header">
+        <h1>Image Server</h1>
+        <p>Upload and browse images across configured directories</p>
+    </header>
+
+    <nav class="site-nav">
+#replace "navigation"
+    </nav>
+
+    <main class="container">
+#replace "content"
+    </main>
+
+    <footer class="site-footer">
+        Max upload size: 20 MB &middot; Supported formats: JPEG, PNG, GIF, WebP
+    </footer>
+
+    <script>
+#include "../templates/app.js"
+    </script>
+</body>
+</html>
