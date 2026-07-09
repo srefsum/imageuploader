@@ -136,24 +136,103 @@ sub preInit {
 
 sub createOptions {
     my $string = "";
-    for my $entry (keys %allowed_dirs) {
-        $string .= sprintf ("<option value=\"%s\">%s</option>\n",$entry ,$allowed_dirs{$entry}{description});
+    for my $entry (sort keys %allowed_dirs) {
+        $string .= sprintf("<option value=\"%s\">%s</option>\n", $entry, $allowed_dirs{$entry}{description});
     }
-        
+
     return $string;
+}
+
+sub build_navigation {
+    my $active = shift // '';
+
+    my @items = (
+        { id => 'home',    href => '/index',                    label => 'Home' },
+        { id => 'upload',  href => '/getupload',                label => 'Upload' },
+        { id => 'images',  href => '/show?directory=images',    label => 'Gallery' },
+        { id => 'uploads', href => '/show?directory=uploads',   label => 'Uploads' },
+        { id => 'logos',   href => '/show?directory=logos',     label => 'Logos' },
+    );
+
+    my $nav = '';
+    for my $item (@items) {
+        my $class = ($item->{id} eq $active) ? 'nav-link nav-link--active' : 'nav-link';
+        $nav .= qq{        <a href="$item->{href}" class="$class">$item->{label}</a>\n};
+    }
+
+    return $nav;
+}
+
+sub render_page {
+    my ($resp, %opts) = @_;
+
+    $resp->{variables}{title}      = $opts{title} // 'Image Server';
+    $resp->{variables}{navigation} = build_navigation($opts{active_page});
+
+    if ($opts{content_template}) {
+        $resp->{variables}{content} = ProcessFileandPrint($resp, $opts{content_template});
+    } elsif ($opts{content}) {
+        $resp->{variables}{content} = $opts{content};
+    } else {
+        $resp->{variables}{content} = '';
+    }
+
+    print ProcessFileandPrint($resp, '../templates/layout.html');
+}
+
+sub print_error_page {
+    my ($resp, $message) = @_;
+
+    print http_header_html();
+    $resp->{variables}{page_title} = 'Error';
+    $resp->{variables}{message}    = $message;
+    render_page(
+        $resp,
+        content_template => '../templates/error.html',
+        title            => 'Error',
+        active_page      => '',
+    );
+}
+
+sub render_upload_result {
+    my ($resp) = @_;
+
+    my $type    = $resp->{variables}{result_type} // 'error';
+    my $message = $resp->{variables}{result_message} // 'An unknown error occurred.';
+    my $dir_key = $resp->{variables}{dir_key} // 'images';
+
+    my $alert_class = ($type eq 'success') ? 'alert-success' : 'alert-error';
+    $resp->{variables}{page_title}   = 'Upload Result';
+    $resp->{variables}{result_alert} = qq{<div class="alert $alert_class"><p>$message</p></div>};
+
+    my $buttons = qq{<a href="/getupload" class="btn btn-primary">Upload another</a>};
+    if ($type eq 'success') {
+        $buttons .= qq{\n    <a href="/show?directory=$dir_key" class="btn btn-secondary">View gallery</a>};
+    }
+    $resp->{variables}{action_buttons} = $buttons;
+
+    render_page(
+        $resp,
+        content_template => '../templates/upload_result.html',
+        title            => 'Upload Result',
+        active_page      => 'upload',
+    );
 }
 
 
 sub getupload {
     my ($request, $httpreq) = @_;
-    my %resp  = %{preInit($request, $httpreq)};
+    my %resp = %{preInit($request, $httpreq)};
 
     print http_header_html();
-    #print Dumper \%resp;
-    
-    $resp{variables}{options} =  createOptions();
-    print ProcessFileandPrint(\%resp,'../templates/upload.html');    
-   
+
+    $resp{variables}{options} = createOptions();
+    render_page(
+        \%resp,
+        content_template => '../templates/upload.html',
+        title            => 'Upload Image',
+        active_page      => 'upload',
+    );
 }
 
 sub ProcessFileandPrint {
@@ -180,7 +259,7 @@ sub ProcessFileandPrint {
             # print $string_fh $1 . "\n";
             print $string_fh ProcessFileandPrint($resp,$1,$indent);
         } elsif ($line =~ /^\#replace\s+\"(.*)\"$/) {
-            my $tmp = $resp->{variables}{$1};
+            my $tmp = $resp->{variables}{$1} // '';
             $tmp =~ s/^/$indent/gm;
             print $string_fh $tmp;
         } else {
@@ -200,23 +279,27 @@ sub ProcessFileandPrint {
 
 sub index {
     my ($request, $httpreq) = @_;
-    my %resp  = %{preInit($request, $httpreq)};
+    my %resp = %{preInit($request, $httpreq)};
+
     print http_header_html();
-    printLandingPage();
+    render_page(
+        \%resp,
+        content_template => '../templates/index_content.html',
+        title            => 'Image Server',
+        active_page      => 'home',
+    );
 }
 
 sub upload {
     my ($request, $httpreq) = @_;
-    my %resp  = %{preInit($request, $httpreq)};
-    my $line = $resp{Line};
-    
+    my %resp = %{preInit($request, $httpreq)};
+
     print http_header_html();
-    # print Dumper $httpreq;
-    
+
     my $category = $httpreq->param('category');
-    $resp{Params}{dir_key} = $category;
+    $resp{Params}{dir_key}   = $category;
     $resp{Params}{directory} = $allowed_dirs{$category}{directory};
-    
+
     my $filename = $httpreq->param('filename');
     $resp{Params}{file} = $filename;
 
@@ -224,32 +307,32 @@ sub upload {
     if (defined($subdir)) {
         $resp{Params}{sub} = $subdir;
     }
-    
-    # print Dumper \%resp;
-    upload::upload(\%resp,$httpreq);
+
+    upload::upload(\%resp, $httpreq);
+    render_upload_result(\%resp);
 }
 
 sub createDir {
     my ($request, $httpreq) = @_;
-    my %resp  = %{preInit($request, $httpreq)};
+    my %resp = %{preInit($request, $httpreq)};
 
     print http_header_html();
-    # print Dumper $httpreq;
-    # print Dumper \%resp;
 
     my $category = $httpreq->param('current_dir');
-    $resp{Params}{folder} = $category;
+    $resp{Params}{folder}    = $category;
     $resp{Params}{directory} = $allowed_dirs{$category}{directory};
 
     my $subdir = $httpreq->param('new_dir');
     $resp{Params}{sub} = $subdir;
-    print Dumper \%resp;
-    if (defined($subdir)) {
-        my $newdir = $resp{Params}{directory} . '/' . $resp{Params}{sub};
-        mkdir($newdir) or die "Failed to create directory: $!";
+
+    if (defined($subdir) && $subdir =~ /^[A-Za-z0-9._-]+$/) {
+        my $newdir = $resp{Params}{directory} . '/' . $subdir;
+        if (mkdir($newdir)) {
+            $resp{Params}{flash} = 'dir_created';
+        }
     }
-    
-    serve::showImages(\%resp,$httpreq);
+
+    serve::showImages(\%resp, $httpreq);
 }
 
 sub show {
