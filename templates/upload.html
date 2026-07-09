@@ -1,47 +1,22 @@
-<!DOCTYPE html>
-<html>
-<head>
-</head>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>File Upload to Different Directories</title>
-        <style>
-#include "../templates/style.html"
-        </style>
-    </head>
+<h2 class="page-title">Upload Image</h2>
+<p class="breadcrumb"><a href="/index">Home</a> / <span>Upload</span></p>
 
-    <body>
-       <header>
-            <div class="container">
-                <h1>Dynamic Perl CGI Engine</h1>
-                <p>Serving this page dynamically via a Common Gateway Interface script.</p>
-                <a href="#features" class="btn">Explore Features</a>
-            </div>
-        </header>
+<div class="card">
+    <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
 
-        <div class="container" id="features">
-            <div class="features">
-                <div class="feature-box">
-                <form action="/upload" method="post" enctype="multipart/form-data">
-
-                    <!-- Dropdown to select the target directory type -->
-                    <label for="category">Choose Destination Directory:</label>
-                    <select name="category" id="category">
+        <div class="form-group">
+            <label class="form-label" for="category">Destination directory</label>
+            <select class="form-select" name="category" id="category">
 #replace "options"
-                    </select>
-                    <br><br>
-
-                    <!-- File input field -->
-                    <label for="filename">Select File:</label>
-                    <input type="file" name="filename" id="filename" />
-                    <br><br>
-
-                    <input type="submit" value="Upload File" />
-                </form>
-                </div>
-            </div>
+            </select>
+            <p class="form-hint" id="category-hint"></p>
         </div>
-    
-    </body>
-</html>
+
+        <div class="form-group">
+            <label class="form-label" for="filename">Select file</label>
+            <input class="form-input" type="file" name="filename" id="filename" accept="image/*" />
+        </div>
+
+        <button type="submit" class="btn btn-primary">Upload file</button>
+    </form>
+</div>
