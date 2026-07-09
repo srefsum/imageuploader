@@ -135,12 +135,58 @@ sub preInit {
 }
 
 sub createOptions {
-    my $string = "";
+    my $selected = shift // '';
+    my $string   = "";
     for my $entry (sort keys %allowed_dirs) {
-        $string .= sprintf("<option value=\"%s\">%s</option>\n", $entry, $allowed_dirs{$entry}{description});
+        my $sel = ($entry eq $selected) ? ' selected' : '';
+        $string .= sprintf("<option value=\"%s\"%s>%s</option>\n", $entry, $sel, $allowed_dirs{$entry}{description});
     }
 
     return $string;
+}
+
+sub list_subdirectories {
+    my $dir_key = shift;
+
+    return () unless defined $allowed_dirs{$dir_key};
+    return () if ($allowed_dirs{$dir_key}{showsubdirs} // '') ne 'Yes';
+
+    my $base = $allowed_dirs{$dir_key}{directory};
+    return () unless -d $base;
+
+    opendir(my $dh, $base) or return ();
+    my @dirs = grep { -d "$base/$_" && $_ !~ /^\.\.?$/ } readdir($dh);
+    closedir($dh);
+
+    return sort @dirs;
+}
+
+sub subdirs_to_json {
+    my %data;
+    for my $key (sort keys %allowed_dirs) {
+        my @subs = list_subdirectories($key);
+        $data{$key} = \@subs if @subs;
+    }
+
+    my @parts;
+    for my $key (sort keys %data) {
+        my @escaped = map { '"' . $_ . '"' } @{$data{$key}};
+        push @parts, '"' . $key . '":[' . join(',', @escaped) . ']';
+    }
+
+    return @parts ? '{' . join(',', @parts) . '}' : '{}';
+}
+
+sub validate_subdir {
+    my ($dir_key, $sub) = @_;
+
+    return 1 if !defined($sub) || $sub eq '';
+    return 0 unless defined $allowed_dirs{$dir_key};
+    return 0 if ($allowed_dirs{$dir_key}{showsubdirs} // '') ne 'Yes';
+    return 0 unless $sub =~ /^[A-Za-z0-9._-]+$/;
+
+    my $path = $allowed_dirs{$dir_key}{directory} . '/' . $sub;
+    return -d $path;
 }
 
 sub build_navigation {
@@ -207,7 +253,10 @@ sub render_upload_result {
 
     my $buttons = qq{<a href="/getupload" class="btn btn-primary">Upload another</a>};
     if ($type eq 'success') {
-        $buttons .= qq{\n    <a href="/show?directory=$dir_key" class="btn btn-secondary">View gallery</a>};
+        my $sub_key     = $resp->{variables}{sub_key};
+        my $gallery_url = "/show?directory=$dir_key";
+        $gallery_url .= '&sub=' . $sub_key if defined($sub_key) && $sub_key ne '';
+        $buttons .= qq{\n    <a href="$gallery_url" class="btn btn-secondary">View gallery</a>};
     }
     $resp->{variables}{action_buttons} = $buttons;
 
@@ -226,7 +275,20 @@ sub getupload {
 
     print http_header_html();
 
-    $resp{variables}{options} = createOptions();
+    my $line               = $resp{Line};
+    my $selected_category  = 'images';
+    my $selected_sub       = '';
+
+    if ($line =~ /[?&]directory=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $selected_category = $1 if defined $allowed_dirs{$1};
+    }
+    if ($line =~ /[?&]sub=([^.\/][A-Za-z0-9\.\-_]+)/) {
+        $selected_sub = $1 if validate_subdir($selected_category, $1);
+    }
+
+    $resp{variables}{options}       = createOptions($selected_category);
+    $resp{variables}{subdirs_json}  = subdirs_to_json();
+    $resp{variables}{selected_sub}  = $selected_sub;
     render_page(
         \%resp,
         content_template => '../templates/upload.html',
@@ -297,6 +359,13 @@ sub upload {
     print http_header_html();
 
     my $category = $httpreq->param('category');
+    if (!defined($category) || !defined($allowed_dirs{$category})) {
+        $resp{variables}{result_type}    = 'error';
+        $resp{variables}{result_message} = 'Invalid destination directory.';
+        render_upload_result(\%resp);
+        return;
+    }
+
     $resp{Params}{dir_key}   = $category;
     $resp{Params}{directory} = $allowed_dirs{$category}{directory};
 
@@ -304,7 +373,14 @@ sub upload {
     $resp{Params}{file} = $filename;
 
     my $subdir = $httpreq->param('sub');
+    $subdir = undef if !defined($subdir) || $subdir eq '';
     if (defined($subdir)) {
+        unless (validate_subdir($category, $subdir)) {
+            $resp{variables}{result_type}    = 'error';
+            $resp{variables}{result_message} = 'Invalid or unknown subdirectory.';
+            render_upload_result(\%resp);
+            return;
+        }
         $resp{Params}{sub} = $subdir;
     }
 
@@ -337,20 +413,18 @@ sub createDir {
 
 sub show {
     my ($request, $httpreq) = @_;
-    my %resp  = %{preInit($request, $httpreq)};
-    # print http_header_html();
+    my %resp = %{preInit($request, $httpreq)};
     my $line = $resp{Line};
-    
-    # print $line . "<br>";
+
+    print http_header_html();
+
     if ($line =~ /[?&]directory=([^.\/][A-Za-z0-9\.\-_]+)/) {
         $resp{Params}{folder} = $1;
-    } else {
-        
     }
     if ($line =~ /[?&]sub=([^.\/][A-Za-z0-9\.\-_]+)/) {
         $resp{Params}{sub} = $1;
     }
-    serve::showImages(\%resp,$httpreq);
+    serve::showImages(\%resp, $httpreq);
 }
 
 sub serve {
@@ -389,101 +463,6 @@ sub http_header_html {
         -charset                     => 'utf-8',
         -Access_Control_Allow_Origin => '*'
     );
-}
-
-# Print the HTML document
-sub printLandingPage {
-    print <<'HTML';
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Welcome to Our Perl CGI App</title>
-        <style>
-            :root {
-                --primary: #4CAF50;
-                --dark: #333;
-                --light: #f4f4f4;
-            }
-            body {
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                margin: 0;
-                padding: 0;
-                color: var(--dark);
-                line-height: 1.6;
-            }
-            header {
-                background: var(--dark);
-                color: #fff;
-                padding: 2rem 0;
-                text-align: center;
-            }
-            .container {
-                width: 80%;
-                margin: auto;
-                overflow: hidden;
-                padding: 3rem 1rem;
-            }
-            .btn {
-                display: inline-block;
-                background: var(--primary);
-                color: #fff;
-                padding: 0.8rem 2rem;
-                text-decoration: none;
-                border-radius: 5px;
-                font-weight: bold;
-                margin-top: 1rem;
-                transition: background 0.3s ease;
-            }
-            .btn:hover {
-                background: #45a049;
-            }
-            .features {
-                display: flex;
-                justify-content: space-around;
-                margin-top: 2rem;
-            }
-            .feature-box {
-                background: var(--light);
-                padding: 1.5rem;
-                width: 30%;
-                border-radius: 5px;
-                text-align: center;
-            }
-        </style>
-    </head>
-    <body>
-
-        <header>
-            <div class="container">
-                <h1>Dynamic Perl CGI Engine</h1>
-                <p>Serving this page dynamically via a Common Gateway Interface script.</p>
-                <a href="#features" class="btn">Explore Features</a>
-            </div>
-        </header>
-
-        <div class="container" id="features">
-            <div class="features">
-                <div class="feature-box">
-                    <h3>Fast</h3>
-                    <p>Perl runs compiled at the speed of the system interpreter, making it an excellent lightweight backend.</p>
-                </div>
-                <div class="feature-box">
-                    <h3>Secure</h3>
-                    <p>Leverage the robust system security features native to your Linux/Unix web server environment.</p>
-                </div>
-                <div class="feature-box">
-                    <h3>Simple</h3>
-                    <p>Deploy landing pages and APIs instantly without heavyweight Node or Python environments.</p>
-                </div>
-            </div>
-        </div>
-
-    </body>
-    </html>
-HTML
-
 }
 
 1;

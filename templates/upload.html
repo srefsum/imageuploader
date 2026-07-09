@@ -12,6 +12,21 @@
             <p class="form-hint" id="category-hint"></p>
         </div>
 
+        <div class="form-group" id="subdir-group" hidden>
+            <label class="form-label" for="sub">Subdirectory</label>
+            <select class="form-select" name="sub" id="sub">
+                <option value="">Root directory</option>
+            </select>
+            <p class="form-hint" id="subdir-hint">Optionally upload into an existing subdirectory.</p>
+        </div>
+
+        <script type="application/json" id="subdirs-data">
+#replace "subdirs_json"
+        </script>
+        <input type="hidden" id="selected-sub" value="
+#replace "selected_sub"
+        " />
+
         <div class="form-group">
             <label class="form-label" for="filename">Select file</label>
             <input class="form-input" type="file" name="filename" id="filename" accept="image/*" />

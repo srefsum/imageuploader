@@ -110,13 +110,24 @@ sub showImages {
         $flash_message = '<div class="alert alert-success">Subdirectory created successfully.</div>';
     }
 
+    my $upload_section = '';
+    if ($main::allowed_dirs{$folder}{showsubdirs} eq 'Yes') {
+        if (defined($resp->{Params}{sub})) {
+            my $sub = $q->escapeHTML($resp->{Params}{sub});
+            $upload_section = qq{<div class="btn-group"><a href="/getupload?directory=$folder&amp;sub=$sub" class="btn btn-primary">Upload to this folder</a></div>\n};
+        } elsif (@directories) {
+            $upload_section = qq{<div class="btn-group"><a href="/getupload?directory=$folder" class="btn btn-secondary">Upload to gallery root</a></div>\n};
+        }
+    }
+
     my $folder_section = '';
     if (@directories) {
         $folder_section = "<div class=\"section\"><h2>Subdirectories</h2>\n<div class=\"folder-list\">\n";
         for my $dir (sort @directories) {
-            my $encoded = $q->escapeHTML($dir);
-            my $href    = '/show?directory=' . $folder . '&sub=' . $encoded;
-            $folder_section .= qq{  <div class="folder-item"><a href="$href">&#128193; $encoded</a></div>\n};
+            my $encoded     = $q->escapeHTML($dir);
+            my $href        = '/show?directory=' . $folder . '&sub=' . $encoded;
+            my $upload_href = '/getupload?directory=' . $folder . '&sub=' . $encoded;
+            $folder_section .= qq{  <div class="folder-item"><div class="folder-item-actions"><a href="$href">&#128193; $encoded</a><a href="$upload_href" class="btn btn-secondary">Upload</a></div></div>\n};
         }
         $folder_section .= "</div></div>\n";
     }
@@ -145,6 +156,7 @@ HTML
     $resp->{variables}{page_title}      = $q->escapeHTML($description);
     $resp->{variables}{breadcrumb}        = $breadcrumb;
     $resp->{variables}{flash_message}    = $flash_message;
+    $resp->{variables}{upload_section}   = $upload_section;
     $resp->{variables}{gallery_items}    = $gallery_items;
     $resp->{variables}{folder_section}   = $folder_section;
     $resp->{variables}{create_dir_form}  = $create_dir_form;

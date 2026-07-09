@@ -14,6 +14,43 @@ document.addEventListener('DOMContentLoaded', function () {
         updateHint();
     }
 
+    var subdirsEl = document.getElementById('subdirs-data');
+    var subSelect = document.getElementById('sub');
+    var subGroup = document.getElementById('subdir-group');
+    var selectedSubEl = document.getElementById('selected-sub');
+
+    if (categorySelect && subdirsEl && subSelect && subGroup) {
+        var subdirs = {};
+        try {
+            subdirs = JSON.parse(subdirsEl.textContent || '{}');
+        } catch (e) {
+            subdirs = {};
+        }
+        var selectedSub = selectedSubEl ? selectedSubEl.value : '';
+
+        function updateSubdirs() {
+            var cat = categorySelect.value;
+            var subs = subdirs[cat] || [];
+            subSelect.innerHTML = '<option value="">Root directory</option>';
+            subs.forEach(function (name) {
+                var opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                if (name === selectedSub) {
+                    opt.selected = true;
+                }
+                subSelect.appendChild(opt);
+            });
+            subGroup.hidden = subs.length === 0;
+        }
+
+        categorySelect.addEventListener('change', function () {
+            selectedSub = '';
+            updateSubdirs();
+        });
+        updateSubdirs();
+    }
+
     var uploadForm = document.getElementById('upload-form');
     if (uploadForm) {
         uploadForm.addEventListener('submit', function (e) {
