@@ -1,0 +1,17 @@
+<allowed_dirs images>
+    directory   = /var/www/images/gallery1
+    description = Images Directory
+    showsubdirs = Yes
+</allowed_dirs>
+
+<allowed_dirs uploads>
+    directory   = /var/www/images/uploads
+    description = Upload Directory
+    showsubdirs = No
+</allowed_dirs>
+
+<allowed_dirs logos>
+    directory   = /var/www/images/logos
+    description = Logo Directory
+    showsubdirs = No
+</allowed_dirs>

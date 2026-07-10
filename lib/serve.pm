@@ -57,8 +57,7 @@ sub showImages {
     my $folder = $resp->{Params}{folder};
 
     if (!defined($folder) || !defined($main::allowed_dirs{$folder})) {
-        my $label = defined($folder) ? $q->escapeHTML($folder) : 'unknown';
-        main::print_error_page($resp, "Directory not available: $label");
+        main::print_error_page($resp, 'The requested directory is not available.');
         return;
     }
 
@@ -97,7 +96,7 @@ sub showImages {
         }
         $gallery_items .= "</div>\n";
     } else {
-        $gallery_items = '<p class="empty-state">No images found in this directory.</p>';
+        $gallery_items = '<p class="empty-state">No files found in this directory.</p>';
     }
 
     my $breadcrumb = qq{<a href="/index">Home</a> / <a href="/show?directory=$folder">} . $q->escapeHTML($description) . '</a>';
@@ -116,7 +115,7 @@ sub showImages {
             my $sub = $q->escapeHTML($resp->{Params}{sub});
             $upload_section = qq{<div class="btn-group"><a href="/getupload?directory=$folder&amp;sub=$sub" class="btn btn-primary">Upload to this folder</a></div>\n};
         } elsif (@directories) {
-            $upload_section = qq{<div class="btn-group"><a href="/getupload?directory=$folder" class="btn btn-secondary">Upload to gallery root</a></div>\n};
+            $upload_section = qq{<div class="btn-group"><a href="/getupload?directory=$folder" class="btn btn-secondary">Upload to $description</a></div>\n};
         }
     }
 
@@ -135,13 +134,15 @@ sub showImages {
     my $create_dir_form = '';
     if (!defined($resp->{Params}{sub}) && $main::allowed_dirs{$folder}{showsubdirs} eq "Yes") {
         my $encoded_folder = $q->escapeHTML($folder);
+        my $encoded_desc   = $q->escapeHTML($description);
         $create_dir_form = <<"HTML";
 <div class="card">
     <h2>Create subdirectory</h2>
     <form action="/create" method="post">
+        <input type="hidden" name="current_dir" value="$encoded_folder">
         <div class="form-group">
-            <label class="form-label" for="current_dir">Parent directory</label>
-            <input class="form-input" type="text" id="current_dir" name="current_dir" value="$encoded_folder" readonly>
+            <label class="form-label">Parent directory</label>
+            <p class="form-hint">$encoded_desc</p>
         </div>
         <div class="form-group">
             <label class="form-label" for="new_dir">New directory name</label>
@@ -153,18 +154,19 @@ sub showImages {
 HTML
     }
 
-    $resp->{variables}{page_title}      = $q->escapeHTML($description);
-    $resp->{variables}{breadcrumb}        = $breadcrumb;
-    $resp->{variables}{flash_message}    = $flash_message;
-    $resp->{variables}{upload_section}   = $upload_section;
-    $resp->{variables}{gallery_items}    = $gallery_items;
+    $resp->{variables}{page_title}           = $q->escapeHTML($description);
+    $resp->{variables}{breadcrumb}           = $breadcrumb;
+    $resp->{variables}{flash_message}      = $flash_message;
+    $resp->{variables}{upload_section}       = $upload_section;
+    $resp->{variables}{gallery_section_title} = 'Files';
+    $resp->{variables}{gallery_items}        = $gallery_items;
     $resp->{variables}{folder_section}   = $folder_section;
     $resp->{variables}{create_dir_form}  = $create_dir_form;
 
     main::render_page(
         $resp,
         content_template => '../templates/gallery.html',
-        title            => "Gallery - $description",
+        title            => $description,
         active_page      => $folder,
     );
 }

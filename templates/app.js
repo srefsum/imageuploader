@@ -2,11 +2,15 @@ document.addEventListener('DOMContentLoaded', function () {
     var categorySelect = document.getElementById('category');
     var categoryHint = document.getElementById('category-hint');
     if (categorySelect && categoryHint) {
-        var hints = {
-            images: 'Gallery images with subdirectory support.',
-            uploads: 'General upload storage, no subdirectories.',
-            logos: 'Logo files, no subdirectories.'
-        };
+        var hints = {};
+        var hintsEl = document.getElementById('category-hints-data');
+        if (hintsEl) {
+            try {
+                hints = JSON.parse(hintsEl.textContent || '{}');
+            } catch (e) {
+                hints = {};
+            }
+        }
         function updateHint() {
             categoryHint.textContent = hints[categorySelect.value] || '';
         }
