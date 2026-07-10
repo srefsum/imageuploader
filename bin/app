@@ -41,6 +41,7 @@ url "/serve"      => \&serve,          REQUEST_METHOD => ['GET'];
 url "/show"       => \&show,           REQUEST_METHOD => ['GET'];
 url "/create"     => \&createDir,      REQUEST_METHOD => ['POST'];
 url "/"           => "redirect http://$hostIP:9000";
+url "/material"   => "redirect http://$hostIP:9000/material";
 
 
   
@@ -559,7 +560,6 @@ sub http_header_html {
 }
 
 1;
-
 
 
 
