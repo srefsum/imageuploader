@@ -12,6 +12,9 @@ use URI::Escape;
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 
+use Config::General qw(ParseConfig);
+use Storable qw(dclone);
+
 local $Data::Dumper::Sortkeys = 1; # Sorts the hash keys alphabetically
 local $Data::Dumper::Terse    = 1; # Removes the $VAR1 variable name wrapper
 local $Data::Dumper::Indent   = 2; # Standard readable indentation (Default)
@@ -24,14 +27,12 @@ use CGI::Dispatch 'url';
 use upload;
 use serve;
 
-my $hostIP = getHostIPAdress();
+our $config;
+GlobalConfig();
 
-# Define a strict map of allowed target paths on the server
-our %allowed_dirs = (
-    'images'    => { directory => '/var/www/images/gallery1',description => 'Images Directory' , showsubdirs => "Yes" },
-    'uploads'   => { directory => '/var/www/images/uploads', description => 'Upload Directory' , showsubdirs => "No" },
-    'logos'     => { directory => '/var/www/images/logos',   description => 'Logo Directory'   , showsubdirs => "No" }
-);
+our %allowed_dirs = %{ dclone( $config->{allowed_dirs} ) };
+
+my $hostIP = getHostIPAdress();
 
 url "/index"      => \&index,          REQUEST_METHOD => ['GET'];
 url "/getupload"  => \&getupload,      REQUEST_METHOD => ['GET'];
@@ -44,6 +45,88 @@ url "/"           => "redirect http://$hostIP:9000";
 
   
 CGI::Dispatch::loop();
+
+sub GlobalConfig {
+    my $filename = 'config.txt';
+    my $confpath = $FindBin::Bin . '/../config';
+    my $realconf = $confpath . '/' . $filename;
+
+    unless ( -e $realconf ) {
+        die "Configuration file $realconf does not exist.\n";
+    }
+
+    my $confobj = Config::General->new($realconf);
+    my %conf    = $confobj->getall();
+    $config = \%conf;
+}
+
+sub default_dir_key {
+    return (sort keys %allowed_dirs)[0];
+}
+
+sub dir_description {
+    my $dir_key = shift;
+    return $allowed_dirs{$dir_key}{description} // $dir_key;
+}
+
+sub dir_list_text {
+    return join( ', ', map { dir_description($_) } sort keys %allowed_dirs );
+}
+
+sub category_hints_to_json {
+    my %hints;
+    for my $key ( sort keys %allowed_dirs ) {
+        my $desc = $allowed_dirs{$key}{description};
+        if ( ( $allowed_dirs{$key}{showsubdirs} // '' ) eq 'Yes' ) {
+            $hints{$key} = "$desc. Subdirectories are supported.";
+        } else {
+            $hints{$key} = "$desc. No subdirectories.";
+        }
+    }
+
+    my @parts;
+    for my $key ( sort keys %hints ) {
+        my $escaped = $hints{$key};
+        $escaped =~ s/\\/\\\\/g;
+        $escaped =~ s/"/\\"/g;
+        push @parts, '"' . $key . '":"' . $escaped . '"';
+    }
+
+    return @parts ? '{' . join( ',', @parts ) . '}' : '{}';
+}
+
+sub build_action_cards {
+    my $html = <<"HTML";
+    <div class="action-card">
+        <h3>Upload File</h3>
+        <p>Upload an image to a configured directory.</p>
+        <a href="/getupload" class="btn btn-primary">Upload</a>
+    </div>
+HTML
+
+    for my $key ( sort keys %allowed_dirs ) {
+        my $desc = dir_description($key);
+        my $text = ( ( $allowed_dirs{$key}{showsubdirs} // '' ) eq 'Yes' )
+          ? "Browse $desc, including subfolders."
+          : "Browse files in $desc.";
+        $html .= <<"HTML";
+    <div class="action-card">
+        <h3>$desc</h3>
+        <p>$text</p>
+        <a href="/show?directory=$key" class="btn btn-primary">Open</a>
+    </div>
+HTML
+    }
+
+    return '<div class="card-grid">' . $html . '</div>';
+}
+
+sub subdir_capable_description {
+    for my $key ( sort keys %allowed_dirs ) {
+        return dir_description($key) if ( $allowed_dirs{$key}{showsubdirs} // '' ) eq 'Yes';
+    }
+    return 'the configured gallery directory';
+}
 
 sub getHostIPAdress {
  
@@ -193,16 +276,22 @@ sub build_navigation {
     my $active = shift // '';
 
     my @items = (
-        { id => 'home',    href => '/index',                    label => 'Home' },
-        { id => 'upload',  href => '/getupload',                label => 'Upload' },
-        { id => 'images',  href => '/show?directory=images',    label => 'Gallery' },
-        { id => 'uploads', href => '/show?directory=uploads',   label => 'Uploads' },
-        { id => 'logos',   href => '/show?directory=logos',     label => 'Logos' },
+        { id => 'home',   href => '/index',     label => 'Home' },
+        { id => 'upload', href => '/getupload', label => 'Upload' },
     );
+
+    for my $key ( sort keys %allowed_dirs ) {
+        push @items,
+          {
+            id    => $key,
+            href  => "/show?directory=$key",
+            label => dir_description($key),
+          };
+    }
 
     my $nav = '';
     for my $item (@items) {
-        my $class = ($item->{id} eq $active) ? 'nav-link nav-link--active' : 'nav-link';
+        my $class = ( $item->{id} eq $active ) ? 'nav-link nav-link--active' : 'nav-link';
         $nav .= qq{        <a href="$item->{href}" class="$class">$item->{label}</a>\n};
     }
 
@@ -245,7 +334,7 @@ sub render_upload_result {
 
     my $type    = $resp->{variables}{result_type} // 'error';
     my $message = $resp->{variables}{result_message} // 'An unknown error occurred.';
-    my $dir_key = $resp->{variables}{dir_key} // 'images';
+    my $dir_key = $resp->{variables}{dir_key} // default_dir_key();
 
     my $alert_class = ($type eq 'success') ? 'alert-success' : 'alert-error';
     $resp->{variables}{page_title}   = 'Upload Result';
@@ -276,7 +365,7 @@ sub getupload {
     print http_header_html();
 
     my $line               = $resp{Line};
-    my $selected_category  = 'images';
+    my $selected_category = default_dir_key();
     my $selected_sub       = '';
 
     if ($line =~ /[?&]directory=([^.\/][A-Za-z0-9\.\-_]+)/) {
@@ -286,9 +375,10 @@ sub getupload {
         $selected_sub = $1 if validate_subdir($selected_category, $1);
     }
 
-    $resp{variables}{options}       = createOptions($selected_category);
-    $resp{variables}{subdirs_json}  = subdirs_to_json();
-    $resp{variables}{selected_sub}  = $selected_sub;
+    $resp{variables}{options}          = createOptions($selected_category);
+    $resp{variables}{subdirs_json}     = subdirs_to_json();
+    $resp{variables}{selected_sub}     = $selected_sub;
+    $resp{variables}{category_hints_json} = category_hints_to_json();
     render_page(
         \%resp,
         content_template => '../templates/upload.html',
@@ -325,8 +415,8 @@ sub ProcessFileandPrint {
             $tmp =~ s/^/$indent/gm;
             print $string_fh $tmp;
         } else {
-            $line =~ /^(\s+)/;
-            $indent = $1;
+            my ($leading) = ($line =~ /^(\s+)/);
+            $indent = defined $leading ? $leading : '';
             print $string_fh "$line\n";
         }
     }
@@ -344,6 +434,9 @@ sub index {
     my %resp = %{preInit($request, $httpreq)};
 
     print http_header_html();
+    $resp{variables}{action_cards}            = build_action_cards();
+    $resp{variables}{directory_list}          = dir_list_text();
+    $resp{variables}{subdir_directory_name}   = subdir_capable_description();
     render_page(
         \%resp,
         content_template => '../templates/index_content.html',

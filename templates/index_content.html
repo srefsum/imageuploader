@@ -1,36 +1,17 @@
 <h2 class="page-title">Dashboard</h2>
 <p class="breadcrumb"><span>Home</span></p>
 
-<div class="card-grid">
-    <div class="action-card">
-        <h3>Upload File</h3>
-        <p>Upload an image to images, uploads, or logos.</p>
-        <a href="/getupload" class="btn btn-primary">Upload</a>
-    </div>
-    <div class="action-card">
-        <h3>Browse Gallery</h3>
-        <p>View images in the main gallery with subdirectories.</p>
-        <a href="/show?directory=images" class="btn btn-primary">Gallery</a>
-    </div>
-    <div class="action-card">
-        <h3>Browse Uploads</h3>
-        <p>View files in the uploads directory.</p>
-        <a href="/show?directory=uploads" class="btn btn-primary">Uploads</a>
-    </div>
-    <div class="action-card">
-        <h3>Browse Logos</h3>
-        <p>View logo files.</p>
-        <a href="/show?directory=logos" class="btn btn-primary">Logos</a>
-    </div>
-</div>
+#replace "action_cards"
 
 <div class="section">
     <h2>How it works</h2>
     <div class="card">
         <p><strong>Upload</strong> — Select a destination directory and file. Files are saved with sanitized names to prevent path traversal.</p>
-        <p><strong>Browse</strong> — Gallery pages list images as thumbnails. Click an image to view the full file.</p>
-        <p><strong>Subdirectories</strong> — The images directory supports subfolders. You can create new folders from the gallery page.</p>
-        <p><strong>Serve</strong> — Images are served directly via <code>/serve?directory=&lt;key&gt;&amp;file=&lt;name&gt;</code> with MIME detection and caching.</p>
+        <p><strong>Browse</strong> — Gallery pages list files as thumbnails. Click a file to view the full image.</p>
+        <p><strong>Subdirectories</strong> — <span id="subdir-capable-name">
+#replace "subdir_directory_name"
+        </span> supports subfolders. You can create new folders from that gallery page.</p>
+        <p><strong>Serve</strong> — Files are served directly via <code>/serve?directory=&lt;key&gt;&amp;file=&lt;name&gt;</code> with MIME detection and caching.</p>
     </div>
 </div>
 
@@ -38,7 +19,9 @@
     <h2>Operational constraints</h2>
     <div class="card">
         <ul class="constraint-list">
-            <li>Allowed directories: images, uploads, logos</li>
+            <li>Configured directories: 
+#replace "directory_list"
+            </li>
             <li>Maximum upload size: 20 MB per request</li>
             <li>Supported image extensions: .jpg, .jpeg, .png, .gif, .webp</li>
             <li>Filenames are sanitized to alphanumeric characters, dots, underscores, and hyphens</li>
@@ -49,6 +32,6 @@
 <div class="section">
     <h2>Security notice</h2>
     <div class="alert alert-warning">
-        This service has no authentication enabled. Directory access is restricted by an allowlist of path keys. Do not expose this server to untrusted networks without adding access controls.
+        This service has no authentication enabled. Directory access is restricted by an allowlist of configured paths. Do not expose this server to untrusted networks without adding access controls.
     </div>
 </div>
