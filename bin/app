@@ -22,12 +22,11 @@ local $Data::Dumper::Terse    = 1; # Removes the $VAR1 variable name wrapper
 local $Data::Dumper::Indent   = 2; # Standard readable indentation (Default)
 
 $CGI::DISABLE_UPLOADS = 0;
-$CGI::POST_MAX        = 1024 * 1024 * 20; # Limit to 20MB total
-
 
 use CGI::Dispatch 'url';
 use upload;
 use serve;
+use music;
 
 our $config;
 our $VERSION = '1.0.0';
@@ -35,9 +34,18 @@ GlobalConfig();
 
 our %allowed_dirs = %{ dclone( $config->{allowed_dirs} ) };
 
+my $music_upload_max_mb = $config->{music_upload_max_mb} // 100;
+$CGI::POST_MAX = 1024 * 1024 * ( $music_upload_max_mb > 20 ? $music_upload_max_mb : 20 );
+
 my $hostIP = getHostIPAdress();
 my $musicPort = $config->{music_server_port} // 9000;
 
+url "/music/create" => \&music_create,      REQUEST_METHOD => ['POST'];
+url "/music/upload" => \&music_do_upload,   REQUEST_METHOD => ['POST'];
+url "/music/upload" => \&music_get_upload,  REQUEST_METHOD => ['GET'];
+url "/music/serve"  => \&music_serve,      REQUEST_METHOD => ['GET'];
+url "/music/browse" => \&music_browse,      REQUEST_METHOD => ['GET'];
+url "/music"        => \&music_index,       REQUEST_METHOD => ['GET'];
 url "/index"      => \&index,          REQUEST_METHOD => ['GET'];
 url "/getupload"  => \&getupload,      REQUEST_METHOD => ['GET'];
 url "/upload"     => \&upload,         REQUEST_METHOD => ['POST'];
@@ -109,6 +117,11 @@ sub build_action_cards {
         <h3>Upload File</h3>
         <p>Upload an image to a configured directory.</p>
         <a href="/getupload" class="btn btn-primary">Upload</a>
+    </div>
+    <div class="action-card">
+        <h3>Music Library</h3>
+        <p>Browse and upload music to the Lyrion Music Server library.</p>
+        <a href="/music" class="btn btn-primary">Open</a>
     </div>
 HTML
 
@@ -347,6 +360,7 @@ sub build_navigation {
     my @items = (
         { id => 'home',   href => '/index',     label => 'Home' },
         { id => 'upload', href => '/getupload', label => 'Upload' },
+        { id => 'music',  href => '/music',     label => 'Music Library' },
     );
 
     for my $key ( sort keys %allowed_dirs ) {
@@ -397,6 +411,100 @@ sub print_error_page {
         title            => 'Error',
         active_page      => '',
     );
+}
+
+sub render_music_upload_result {
+    my ($resp) = @_;
+
+    my $type    = $resp->{variables}{result_type} // 'error';
+    my $message = $resp->{variables}{result_message} // 'An unknown error occurred.';
+    my $path    = $resp->{variables}{music_path} // '';
+
+    my $alert_class = ( $type eq 'success' ) ? 'alert-success' : 'alert-error';
+    $resp->{variables}{page_title}   = 'Upload Result';
+    $resp->{variables}{result_alert} = qq{<div class="alert $alert_class"><p>$message</p></div>};
+
+    if ( defined $resp->{variables}{rescan_note} && $resp->{variables}{rescan_note} ne '' ) {
+        my $note = $resp->{variables}{rescan_note};
+        $resp->{variables}{rescan_alert} = qq{<div class="alert alert-info"><p>$note</p></div>};
+    } else {
+        $resp->{variables}{rescan_alert} = '';
+    }
+
+    my $enc_path = music::encode_path_param($path);
+    my $buttons  = qq{<a href="/music/upload?path=$enc_path" class="btn btn-primary">Upload another</a>};
+    if ( $type eq 'success' ) {
+        my $browse_url = $path eq '' ? '/music' : "/music/browse?path=$enc_path";
+        $buttons .= qq{\n    <a href="$browse_url" class="btn btn-secondary">Browse folder</a>};
+    }
+    $resp->{variables}{action_buttons} = $buttons;
+
+    render_page(
+        $resp,
+        content_template => '../templates/music_upload_result.html',
+        title            => 'Upload Result',
+        active_page      => 'music',
+    );
+}
+
+sub music_index {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    print http_header_html();
+    music::browse( \%resp, $httpreq, '' );
+}
+
+sub music_browse {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    print http_header_html();
+    music::browse( \%resp, $httpreq, decode_music_param( $httpreq, 'path' ) );
+}
+
+sub music_get_upload {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    print http_header_html();
+    music::show_upload_form( \%resp, $httpreq, decode_music_param( $httpreq, 'path' ) );
+}
+
+sub decode_music_param {
+    my ( $httpreq, $name ) = @_;
+    my $value = scalar $httpreq->param($name);
+    return '' if !defined $value || $value eq '';
+    return music::normalize_music_path($value);
+}
+
+sub music_do_upload {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    print http_header_html();
+    music::upload( \%resp, $httpreq );
+    render_music_upload_result( \%resp );
+}
+
+sub music_create {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    print http_header_html();
+
+    my $parent_path = decode_music_param( $httpreq, 'parent_path' );
+    my $new_dir     = scalar $httpreq->param('new_dir');
+
+    if ( music::create_subdir( $parent_path, $new_dir ) ) {
+        $resp{Params}{flash} = 'dir_created';
+    } else {
+        $resp{Params}{flash} = 'dir_failed';
+    }
+
+    music::browse( \%resp, $httpreq, $parent_path );
+}
+
+sub music_serve {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    $resp{Params}{path} = decode_music_param( $httpreq, 'path' );
+    music::serve( \%resp, $httpreq );
 }
 
 sub render_upload_result {
