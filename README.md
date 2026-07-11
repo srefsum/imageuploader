@@ -1,141 +1,130 @@
-# imageuploader
+# Image Server
 
-Perl CGI image upload and image browsing service with server-rendered HTML pages.
+Perl CGI service for uploading and browsing images, integrated with a Lyrion Music Server (LMS) home network. All HTML pages share a dark, server-rendered theme defined in `templates/`.
 
-## What the app currently does
+## Application entrypoint
 
-The active application entrypoint is:
+- **`bin/app`** — active CGI script routed through Apache (`apache/imageserver.conf` rewrites all requests to this script).
 
-- `bin/app`
+## Routes
 
-It uses `CGI::Dispatch` and serves these actions:
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/index` | GET | Dashboard with quick links to upload and browse configured directories |
+| `/getupload` | GET | Upload form with directory and optional subdirectory selector |
+| `/upload` | POST | Upload a file to a configured directory |
+| `/show?directory=<key>[&sub=<name>]` | GET | Gallery view of images in a configured directory |
+| `/create` | POST | Create a subdirectory (only for directories with `showsubdirs = Yes`) |
+| `/serve?directory=<key>&file=<name>[&sub=<name>]` | GET | Stream a file with MIME detection and cache headers |
+| `/music` | GET | Browse music library root (artists/folders) |
+| `/music/browse?path=<relative>` | GET | Browse one level of the music library |
+| `/music/upload?path=<relative>` | GET | Upload form for a library folder |
+| `/music/upload` | POST | Upload an audio file to a library folder |
+| `/music/serve?path=<relative>` | GET | Stream a file from the music library |
+| `/material` | GET | Redirect to LMS material page (`http://<host-ip>:9000/material`) |
+| `/<PlayerName>` | GET | Dynamic redirect per LMS player (e.g. `/Arne` → material page for that player) |
+| `/` | GET | Redirect to LMS web UI (`http://<host-ip>:9000`) |
 
-- `GET /index`  
-  Shows a simple landing page (inline HTML/CSS in Perl).
-- `GET /getupload`  
-  Shows an upload form with destination selector.
-- `POST /upload`  
-  Uploads one file to a predefined target directory.
-- `GET /show?directory=<key>[&sub=<name>]`  
-  Shows a gallery view of images in a configured directory (and optional subdirectory).
-- `POST /create`  
-  Creates a subdirectory under a configured base directory.
-- `GET /serve?directory=<key>&file=<name>[&sub=<name>]`  
-  Streams an image file with MIME type detection and cache headers.
-- `GET /`  
-  Redirects to `http://<host-ip>:9000` (current hardcoded behavior defined in `bin/app` route mapping; should be made configurable per environment).
+Player routes are registered at startup by querying the LMS JSON-RPC API (`/jsonrpc.js`, method `slim.request`, command `players 0`). Player names have a leading `Radio ` prefix stripped for the URL path.
 
-Configured target directories (hardcoded in `bin/app`):
+## Configuration
 
-- `images` => `/var/www/images/gallery1` (subdirectories shown)
-- `uploads` => `/var/www/images/uploads`
-- `logos` => `/var/www/images/logos`
+Directories and server settings are loaded from **`config/config.txt`** at startup via `Config::General`:
 
-## Current capabilities and limits
+```ini
+<allowed_dirs images>
+    directory   = /var/www/images/gallery1
+    description = Images Directory
+    showsubdirs = Yes
+</allowed_dirs>
 
-### Capabilities
+music_server_port = 9000
+```
 
-- Upload image/file content into one of three allowed base folders.
-- Serve files directly via `/serve`.
-- Render a basic image gallery for allowed directories.
-- List first-level subdirectories in gallery mode.
-- Create a new folder (currently primarily wired to the `images` flow in UI).
-- Basic filename sanitizing and path-key allowlisting for uploads/serving.
+| Setting | Purpose |
+|---------|---------|
+| `allowed_dirs` blocks | Allowed upload/browse targets (`directory`, `description`, `showsubdirs`) |
+| `music_server_port` | LMS port for redirects, player discovery, and library rescan (default `9000`) |
+| `music_library_path` | Root path of the Lyrion Music Server library (default `/srv/music`) |
+| `music_upload_max_mb` | Maximum music upload size in MB (default `100`) |
+| `music_extensions` | Allowed audio file extensions for upload |
+| `music_rescan_after_upload` | Trigger LMS rescan after upload (`Yes` / `No`) |
 
-### Limits
+The app exits on startup if the config file is missing.
 
-- No authentication/authorization.
-- No delete/rename/move operations.
-- No metadata database.
-- UI is inconsistent (mixed inline CSS/templates, duplicated styles).
-- Some repository files are legacy or unrelated to the current image uploader flow, including `bin/index.html` and `lib/app`.
-- These files are not required by the active image upload routes in `bin/app` and should be treated as separate/archived context unless intentionally re-used.
+## Current capabilities
 
-## Runtime architecture (current)
+- Unified dark UI theme across all pages (`templates/layout.html`, `templates/style.html`)
+- Shared navigation built from config directory descriptions
+- Image upload with filename sanitization and 20 MB POST limit
+- Upload into subdirectories when they exist (gallery directories only)
+- Image gallery with thumbnail grid, filename filter, and subdirectory browsing
+- Subdirectory creation from the gallery page
+- Application version shown in footer (currently **1.0.0**, defined as `$VERSION` in `bin/app`)
+- LMS player shortcuts registered dynamically at startup
+- Music library browse (level-by-level) and upload to `/srv/music`
+- Optional LMS library rescan after music upload
 
-- **Backend language:** Perl
-- **Frontend language:** HTML + CSS + small inline pure JavaScript for simple DOM behavior (for example form interaction and basic dynamic selection)
-- **Router:** `CGI::Dispatch`
-- **Core modules used by app:**
-  - `lib/upload.pm`
-  - `lib/serve.pm`
-- **Templates:** `templates/*.html`
-- **Apache example config:** `apache/imageserver.conf`
+## Limits
 
----
+- No authentication or authorization
+- No delete, rename, or move operations
+- No metadata database
+- Music library browsing is level-by-level (not a full recursive tree)
+- Player routes are only registered at process start; new LMS players require an app restart (or future reload mechanism)
 
-## Proposed common UI theme (somber, simple, modern)
+## Architecture
 
-No external packages required. Use only Perl templates and pure JavaScript.
+```
+bin/app                 CGI entrypoint, routing, config load, template rendering
+lib/upload.pm           POST /upload handler
+lib/serve.pm            GET /serve and /show handlers
+lib/music.pm            Music library browse, upload, serve, LMS rescan
+lib/CGI/Dispatch.pm     URL router
+templates/              HTML fragments, CSS, and JavaScript
+config/config.txt       Runtime configuration
+apache/imageserver.conf Apache vhost example
+deploy                  Copy script to /var/www/image-server/
+```
 
-### Visual direction
+### Template system
 
-- Dark neutral palette:
-  - Background: `#121417`
-  - Surface/card: `#1A1D21`
-  - Border: `#2A2F36`
-  - Primary accent: `#8AA3B8`
-  - Text main: `#E8EDF2`
-  - Text muted: `#A1ACB8`
-- Clean typography: system sans-serif stack only (no externally loaded web fonts).
-- Rounded corners (`8px`), subtle shadows, high contrast.
-- Consistent spacing scale (`4px, 8px, 12px, 16px, 24px, 32px`).
-- Small, focused interactions (hover/focus states, no animation-heavy UI).
+`ProcessFileandPrint()` in `bin/app` supports:
 
-### Implementation approach
+- `#include "path"` — inline another template file
+- `#replace "variable"` — substitute from `$resp->{variables}{variable}`
 
-1. Move all shared CSS into one template include:
-   - `templates/style.html`
-2. Create a shared page shell template (header/nav/content/footer).
-3. Reuse the same button, card, form, table, and gallery classes on every page.
-4. Keep JavaScript minimal and framework-free:
-   - DOMContentLoaded init
-   - Form validation helpers
-   - Optional gallery filtering/sorting controls
-5. Keep rendering server-side in Perl; use JS only for progressive enhancement.
+All pages render through `render_page()` → `templates/layout.html`.
 
----
+### UI theme
 
-## Proposed common landing page
+Dark somber palette, system sans-serif fonts, no external CSS/JS frameworks. Components include cards, buttons, forms, gallery grid, folder list, alerts, and breadcrumbs. Client-side JavaScript (`templates/app.js`) handles upload validation, directory hints, subdirectory selection, and gallery filtering.
 
-Create one dashboard page where all actions are explained and reachable.
+## Deployment
 
-### Purpose
+Run the syntax check, then deploy:
 
-- Explain what this service is.
-- Give direct links to each operation.
-- Show status/context (configured directories, allowed file types, upload limits).
+```bash
+./check
+./deploy
+```
 
-### Suggested sections
+`./check` runs `perl -c bin/app` (which also loads all required modules). `./deploy` runs `./check` automatically before copying files.
 
-1. **Header**
-   - App name and short description.
-2. **Quick actions (cards/buttons)**
-   - Upload file (`/getupload`)
-   - Browse images (`/show?directory=images`)
-   - Browse uploads (`/show?directory=uploads`)
-   - Browse logos (`/show?directory=logos`)
-3. **How it works**
-   - One short paragraph per action.
-4. **Operational constraints**
-   - Allowed directories, max upload size, supported image extensions.
-5. **Security notice**
-   - Explain path restrictions and that auth is currently not enabled.
+Copies `bin/app`, libraries, templates, and `config/config.txt` to `/var/www/image-server/`.
 
-### Suggested route usage
+Host IP is detected from `eth0` at runtime for LMS redirects.
 
-- Keep `/index` as the canonical landing page.
-- Keep `/` as redirect if needed by deployment, but target `/index` for app entry consistency.
+## Legacy / unrelated files
 
----
+These are not used by the active image server routes in `bin/app`:
 
-## Pure JavaScript usage proposal
+- `lib/app`, `lib/CommonApiHandler.pm` — separate microservice framework
+- `lib/showimages.pm` — superseded by `lib/serve.pm`
+- `bin/index.html`, `bin/test*.html`, `bin/test*.pl` — experiments and prototypes
+- `bin/test7.pl`, `bin/dir.html` — music directory tree prototype (see `MusicPlan.md`)
 
-Use vanilla JS only for UI behavior, for example:
+## Related documentation
 
-- Directory selector that updates helper text.
-- Inline form validation before submit.
-- Copyable direct links for served images.
-- Optional client-side filter field in gallery view.
-
-All business logic and file operations remain in Perl.
+- **`CAnalysis.md`** — original UI consistency analysis and theme implementation notes
+- **`MusicPlan.md`** — analysis of the music directory prototype and plan for LMS music library pages

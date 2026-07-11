@@ -409,6 +409,51 @@ input[type="file"].form-input {
     color: var(--color-primary);
 }
 
+/* Track list */
+.track-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.track-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.track-item:last-child {
+    border-bottom: none;
+}
+
+.track-item a {
+    color: var(--color-text);
+    word-break: break-word;
+}
+
+.track-item a:hover {
+    color: var(--color-primary);
+}
+
+.track-meta {
+    flex-shrink: 0;
+    font-size: 0.8125rem;
+    color: var(--color-text-muted);
+}
+
+.music-album-art {
+    text-align: center;
+    margin-bottom: var(--space-xl);
+}
+
+.music-album-art img {
+    max-width: 200px;
+    max-height: 200px;
+}
+
 /* Sections */
 .section {
     margin-bottom: var(--space-2xl);

@@ -77,4 +77,27 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         });
     }
+
+    var trackFilter = document.getElementById('track-filter');
+    if (trackFilter) {
+        trackFilter.addEventListener('input', function () {
+            var query = trackFilter.value.toLowerCase();
+            var items = document.querySelectorAll('.track-item');
+            items.forEach(function (item) {
+                var name = item.getAttribute('data-name') || '';
+                item.style.display = name.indexOf(query) !== -1 ? '' : 'none';
+            });
+        });
+    }
+
+    var musicUploadForm = document.getElementById('music-upload-form');
+    if (musicUploadForm) {
+        musicUploadForm.addEventListener('submit', function (e) {
+            var fileInput = document.getElementById('music-filename');
+            if (fileInput && !fileInput.files.length) {
+                e.preventDefault();
+                alert('Please select a file to upload.');
+            }
+        });
+    }
 });

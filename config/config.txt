@@ -17,3 +17,9 @@
 </allowed_dirs>
 
 music_server_port = 9000
+
+music_library_path        = /srv/music
+music_upload_max_mb       = 100
+music_extensions          = mp3 flac ogg m4a aac wma wav
+music_image_extensions    = jpg jpeg png gif webp
+music_rescan_after_upload = Yes

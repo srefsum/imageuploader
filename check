@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+echo "Checking Perl syntax..."
+perl -c bin/app
+perl -c lib/upload.pm
+perl -c lib/serve.pm
+perl -c lib/music.pm
+echo "Syntax OK"
