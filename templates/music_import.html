@@ -1,0 +1,73 @@
+<h2 class="page-title">Import Music</h2>
+<p class="breadcrumb"><a href="/index">Home</a> / <a href="/music">Music Library</a> / <span>Import</span></p>
+
+<div class="card">
+    <p>Import an entire <strong>artist folder</strong> (artist with album subfolders) or a single <strong>album folder</strong> from your PC. Existing files on the server are never overwritten.</p>
+    <p class="form-hint">Use Chrome or Edge. Select a folder synced from Dropbox on your computer. Allowed file types:
+#replace "extensions_text"
+    </p>
+</div>
+
+<div class="card" id="music-import-form-card">
+    <form id="music-import-form" data-batch-size="
+#replace "import_batch_size"
+" data-max-mb="
+#replace "max_import_mb"
+">
+        <div class="form-group">
+            <label class="form-label">Import type</label>
+            <div class="import-mode-options">
+                <label class="import-mode-option"><input type="radio" name="import_mode" value="artist" checked> Artist folder</label>
+                <label class="import-mode-option"><input type="radio" name="import_mode" value="album"> Album folder</label>
+            </div>
+        </div>
+
+        <div class="form-group" id="source-artist-group">
+            <label class="form-label" for="source-artist">Artist name</label>
+            <input class="form-input" type="text" id="source-artist" name="source_artist" placeholder="Name of the artist folder you will select" required>
+            <p class="form-hint">Must match the artist folder name on your PC (e.g. Bjelleklang).</p>
+        </div>
+
+        <div class="form-group" id="album-mode-fields" hidden>
+            <label class="form-label" for="source-album">Album name</label>
+            <input class="form-input" type="text" id="source-album" name="source_album" placeholder="Name of the album folder you will select">
+            <p class="form-hint">Must match the album folder name on your PC.</p>
+
+            <label class="form-label" for="target-artist">Target artist on server</label>
+            <select class="form-input" id="target-artist" name="target_artist">
+#replace "artist_options"
+            </select>
+            <p class="form-hint">Or enter a new artist name below.</p>
+            <input class="form-input" type="text" id="target-artist-new" name="target_artist_new" placeholder="New artist name (optional)">
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="import-folder">Choose folder</label>
+            <input class="form-input" type="file" id="import-folder" webkitdirectory directory multiple>
+            <p class="form-hint">Max recommended batch size per request:
+#replace "max_import_mb"
+             MB total. Files upload in batches of
+#replace "import_batch_size"
+            .</p>
+        </div>
+
+        <div class="card" id="import-preview" hidden>
+            <h3>Preview</h3>
+            <p id="import-preview-summary"></p>
+            <ul class="constraint-list" id="import-preview-stats"></ul>
+        </div>
+
+        <div class="form-group" id="import-progress" hidden>
+            <label class="form-label">Upload progress</label>
+            <progress id="import-progress-bar" max="100" value="0"></progress>
+            <p class="form-hint" id="import-progress-text"></p>
+        </div>
+
+        <div id="import-result" hidden></div>
+
+        <div class="btn-group">
+            <button type="submit" class="btn btn-primary" id="import-submit" disabled>Upload folder</button>
+            <a href="/music" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
