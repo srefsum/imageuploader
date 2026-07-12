@@ -35,11 +35,16 @@ GlobalConfig();
 our %allowed_dirs = %{ dclone( $config->{allowed_dirs} ) };
 
 my $music_upload_max_mb = $config->{music_upload_max_mb} // 100;
-$CGI::POST_MAX = 1024 * 1024 * ( $music_upload_max_mb > 20 ? $music_upload_max_mb : 20 );
+my $music_import_max_mb = $config->{music_import_max_mb} // 500;
+my $post_max_mb = $music_upload_max_mb > $music_import_max_mb ? $music_upload_max_mb : $music_import_max_mb;
+$post_max_mb = 20 if $post_max_mb < 20;
+$CGI::POST_MAX = 1024 * 1024 * $post_max_mb;
 
 my $hostIP = getHostIPAdress();
 my $musicPort = $config->{music_server_port} // 9000;
 
+url "/music/import" => \&music_do_import,   REQUEST_METHOD => ['POST'];
+url "/music/import" => \&music_get_import,   REQUEST_METHOD => ['GET'];
 url "/music/create" => \&music_create,      REQUEST_METHOD => ['POST'];
 url "/music/upload" => \&music_do_upload,   REQUEST_METHOD => ['POST'];
 url "/music/upload" => \&music_get_upload,  REQUEST_METHOD => ['GET'];
@@ -121,7 +126,8 @@ sub build_action_cards {
     <div class="action-card">
         <h3>Music Library</h3>
         <p>Browse and upload music to the Lyrion Music Server library.</p>
-        <a href="/music" class="btn btn-primary">Open</a>
+        <a href="/music" class="btn btn-primary">Browse</a>
+        <a href="/music/import" class="btn btn-secondary">Import folder</a>
     </div>
 HTML
 
@@ -431,8 +437,11 @@ sub render_music_upload_result {
         $resp->{variables}{rescan_alert} = '';
     }
 
+    $resp->{variables}{detail_lists} = $resp->{variables}{detail_lists} // '';
+
     my $enc_path = music::encode_path_param($path);
-    my $buttons  = qq{<a href="/music/upload?path=$enc_path" class="btn btn-primary">Upload another</a>};
+    my $buttons  = qq{<a href="/music/upload?path=$enc_path" class="btn btn-primary">Upload more files</a>};
+    $buttons .= qq{\n    <a href="/music/import" class="btn btn-secondary">Import folder</a>};
     if ( $type eq 'success' ) {
         my $browse_url = $path eq '' ? '/music' : "/music/browse?path=$enc_path";
         $buttons .= qq{\n    <a href="$browse_url" class="btn btn-secondary">Browse folder</a>};
@@ -473,6 +482,19 @@ sub decode_music_param {
     my $value = scalar $httpreq->param($name);
     return '' if !defined $value || $value eq '';
     return music::normalize_music_path($value);
+}
+
+sub music_do_import {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    music::import_tree( \%resp, $httpreq );
+}
+
+sub music_get_import {
+    my ( $request, $httpreq ) = @_;
+    my %resp = %{ preInit( $request, $httpreq ) };
+    print http_header_html();
+    music::show_import_form( \%resp, $httpreq );
 }
 
 sub music_do_upload {

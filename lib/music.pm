@@ -49,6 +49,281 @@ sub is_uploadable_file {
     return is_audio_file($name) || is_image_file($name);
 }
 
+sub allow_overwrite {
+    my $value = lc( $main::config->{music_overwrite} // 'No' );
+    return $value eq 'yes';
+}
+
+sub import_skip_patterns {
+    my $cfg = $main::config->{music_import_skip_files} // 'desktop.ini Thumbs.db .DS_Store *.m3u';
+    my @patterns = ref $cfg eq 'ARRAY' ? @$cfg : split /\s+/, $cfg;
+    return grep { $_ ne '' } @patterns;
+}
+
+sub is_skipped_import_file {
+    my ($name) = @_;
+    my $base = lc( basename($name) );
+    for my $pattern ( import_skip_patterns() ) {
+        my $lc = lc($pattern);
+        if ( $lc =~ /^\*\.(.+)$/ ) {
+            return 1 if $base =~ /\.\Q$1\E$/i;
+        }
+        elsif ( $base eq $lc ) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+sub sanitize_filename {
+    my ($name) = @_;
+    $name = basename( normalize_text($name) );
+    if ( $name =~ /[^A-Za-z0-9._\- \x{80}-\x{FFFF}]/ ) {
+        $name =~ s/[^A-Za-z0-9._\- \x{80}-\x{FFFF}]//g;
+    }
+    return $name;
+}
+
+sub validate_path_parts {
+    my (@parts) = @_;
+    return 0 if !@parts;
+    for my $part (@parts) {
+        return 0 unless validate_dirname($part);
+    }
+    return 1;
+}
+
+sub abs_path_for_rel {
+    my ($rel_path) = @_;
+
+    $rel_path = normalize_music_path($rel_path);
+
+    my $root = music_root();
+    return abs_path($root) if $rel_path eq '';
+
+    return undef if $rel_path =~ /\.\./;
+
+    my $abs = $root;
+    for my $part ( split m{/}, $rel_path ) {
+        next if $part eq '' || $part eq '.';
+        return undef if $part eq '..';
+        return undef unless validate_dirname($part);
+        $abs = File::Spec->catdir( $abs, $part );
+    }
+
+    my $root_abs = abs_path($root);
+    return undef unless defined $root_abs;
+
+    my $target_abs = abs_path($abs) // $abs;
+    return undef unless index( $target_abs, $root_abs ) == 0;
+
+    return $target_abs;
+}
+
+sub ensure_parent_dirs {
+    my ($abs_file) = @_;
+
+    my $root_abs = abs_path( music_root() );
+    return 0 unless defined $root_abs;
+
+    my $parent = dirname($abs_file);
+    return 0 unless index( $parent, $root_abs ) == 0;
+
+    my @to_create;
+    my $current = $parent;
+    while ( index( $current, $root_abs ) == 0 && $current ne $root_abs ) {
+        push @to_create, $current unless -d $current;
+        my $next = dirname($current);
+        last if $next eq $current;
+        $current = $next;
+    }
+
+    for my $dir ( reverse @to_create ) {
+        return 0 if -e $dir && !-d $dir;
+        mkdir($dir) or return 0;
+    }
+
+    return 1;
+}
+
+sub safe_write_file {
+    my ( $abs_path, $upload_fh ) = @_;
+
+    if ( -d $abs_path ) {
+        return ( status => 'skipped', reason => 'is_directory' );
+    }
+
+    if ( -e $abs_path ) {
+        if ( !allow_overwrite() ) {
+            return ( status => 'skipped', reason => 'exists' );
+        }
+    }
+
+    return ( status => 'error', reason => 'mkdir_failed' ) unless ensure_parent_dirs($abs_path);
+
+    my $existed = -e $abs_path;
+    open( my $out_fh, '>', $abs_path ) or return ( status => 'error', reason => "write_failed:$!" );
+    binmode $out_fh;
+
+    my $buffer;
+    while ( read( $upload_fh, $buffer, 16384 ) ) {
+        print $out_fh $buffer;
+    }
+    close $out_fh;
+
+    my $status = ( $existed && allow_overwrite() ) ? 'overwritten' : 'created';
+    return ( status => $status );
+}
+
+sub list_artists {
+    my $root = music_root();
+    opendir my $dh, $root or return ();
+    my @artists = sort grep { $_ ne '.' && $_ ne '..' && -d File::Spec->catdir( $root, $_ ) } readdir($dh);
+    closedir $dh;
+    return map { normalize_text($_) } @artists;
+}
+
+sub upload_file_entries {
+    my ($q) = @_;
+    my @entries;
+    my @names = $q->param('filename');
+    @names = grep { defined && $_ ne '' } @names;
+
+    if (@names) {
+        for my $name (@names) {
+            my $fh = $q->upload($name);
+            push @entries, { name => $name, fh => $fh } if $fh;
+        }
+        return @entries if @entries;
+    }
+
+    my $fh = $q->upload('filename');
+    if ($fh) {
+        push @entries,
+          {
+            name => scalar( $q->param('filename') // 'upload.bin' ),
+            fh   => $fh,
+          };
+    }
+
+    return @entries;
+}
+
+sub map_import_destination {
+    my ( $mode, $source_artist, $source_album, $target_artist, $relpath ) = @_;
+
+    $relpath =~ s{\\}{/}g;
+    $relpath =~ s{^/+|/+$}{}g;
+
+    my @parts = split_path_parts($relpath);
+    return '' if !@parts;
+
+    if ( $mode eq 'artist' ) {
+        return join_path_parts( $source_artist, @parts );
+    }
+
+    return join_path_parts( $target_artist, $source_album, @parts );
+}
+
+sub apply_upload_summary {
+    my ( $resp, $q, $summary ) = @_;
+
+    my $created   = $summary->{created}   // [];
+    my $skipped   = $summary->{skipped}   // [];
+    my $rejected  = $summary->{rejected}  // [];
+    my $errors    = $summary->{errors}    // [];
+    my $rel_path  = $summary->{dest_path} // '';
+    my $dest_label = $rel_path eq '' ? 'Music Library' : $rel_path;
+
+    my $created_count  = scalar @$created;
+    my $skipped_count  = scalar @$skipped;
+    my $rejected_count = scalar @$rejected;
+    my $error_count    = scalar @$errors;
+
+    if ( $created_count == 0 && $error_count > 0 && $skipped_count == 0 && $rejected_count == 0 ) {
+        $resp->{variables}{result_type}    = 'error';
+        $resp->{variables}{result_message} = html_escape_text( $q, $errors->[0]{message} );
+        return;
+    }
+
+    my $type = ( $created_count > 0 || $skipped_count > 0 ) ? 'success' : 'error';
+    $resp->{variables}{result_type} = $type;
+
+    my $message = "Uploaded <strong>$created_count</strong> file(s) to <strong>"
+      . html_escape_text( $q, $dest_label ) . '</strong>.';
+    if ( $skipped_count > 0 ) {
+        $message .= " Skipped <strong>$skipped_count</strong> existing file(s).";
+    }
+    if ( $rejected_count > 0 ) {
+        $message .= " Rejected <strong>$rejected_count</strong> unsupported file(s).";
+    }
+    if ( $error_count > 0 ) {
+        $message .= " <strong>$error_count</strong> error(s) occurred.";
+    }
+
+    $resp->{variables}{result_message} = $message;
+    $resp->{variables}{music_path}     = $rel_path;
+    $resp->{variables}{detail_lists}   = build_upload_detail_html( $q, $summary );
+
+    if ( $created_count > 0 ) {
+        maybe_trigger_rescan($resp);
+    }
+}
+
+sub build_upload_detail_html {
+    my ( $q, $summary ) = @_;
+
+    my $html = '';
+    for my $section (
+        [ 'Created', $summary->{created}  // [], 'created' ],
+        [ 'Skipped (already on server)', $summary->{skipped}  // [], 'skipped' ],
+        [ 'Rejected', $summary->{rejected} // [], 'rejected' ],
+        [ 'Errors', $summary->{errors}   // [], 'error' ],
+    ) {
+        my ( $title, $items, $class ) = @$section;
+        next if !@$items;
+
+        $html .= qq{<div class="card import-detail"><h3>$title</h3><ul class="track-list">\n};
+        for my $item (@$items) {
+            my $label = ref $item eq 'HASH' ? ( $item->{path} // $item->{message} ) : $item;
+            $html .= qq{  <li class="track-item import-item import-item--$class">}
+              . html_escape_text( $q, $label ) . "</li>\n";
+        }
+        $html .= "</ul></div>\n";
+    }
+
+    return $html;
+}
+
+sub maybe_trigger_rescan {
+    my ($resp) = @_;
+
+    my $rescan_cfg = lc( $main::config->{music_rescan_after_upload} // 'Yes' );
+    return if $rescan_cfg ne 'yes';
+
+    my $host_ip = main::getHostIPAdress();
+    my $port    = $main::config->{music_server_port} // 9000;
+    if ( trigger_lms_rescan( $host_ip, $port ) ) {
+        $resp->{variables}{rescan_note} = 'LMS library rescan was triggered.';
+    } else {
+        $resp->{variables}{rescan_note} = 'Upload succeeded, but LMS rescan could not be triggered.';
+    }
+}
+
+sub process_file_upload {
+    my ( $abs_dir, $file_param, $upload_fh ) = @_;
+
+    my $safe_filename = sanitize_filename($file_param);
+    return ( status => 'rejected', path => $file_param, message => 'Invalid filename' )
+      if $safe_filename eq '';
+    return ( status => 'rejected', path => $safe_filename, message => 'Unsupported file type' )
+      if !is_uploadable_file($safe_filename);
+
+    my $final_path = File::Spec->catfile( $abs_dir, $safe_filename );
+    my %result = safe_write_file( $final_path, $upload_fh );
+    return ( status => $result{status}, path => $safe_filename, message => $result{reason} // '' );
+}
+
 sub path_depth {
     my ($rel_path) = @_;
     return 0 if !defined($rel_path) || $rel_path eq '';
@@ -302,9 +577,12 @@ sub browse {
     my $enc_path   = encode_path_parts(@base_parts);
     my $depth      = path_depth($rel_path);
 
-    my $upload_section = '';
+    my $upload_section = qq{<div class="btn-group"><a href="/music/import" class="btn btn-primary">Import artist or album folder</a></div>\n};
     if ( can_upload($rel_path) ) {
-        $upload_section = qq{<div class="btn-group"><a href="/music/upload?path=$enc_path" class="btn btn-primary">Upload music or images</a></div>\n};
+        $upload_section .= qq{<div class="btn-group"><a href="/music/upload?path=$enc_path" class="btn btn-secondary">Upload files to this folder</a></div>\n};
+    }
+    elsif ( $depth == 0 ) {
+        $upload_section .= qq{<p class="form-hint">Select an artist or album folder on the import page to upload many files at once.</p>\n};
     }
 
     my $flash_message = '';
@@ -454,7 +732,7 @@ sub show_upload_form {
 sub upload {
     my ( $resp, $q ) = @_;
 
-    my $rel_path = normalize_music_path( scalar $q->param('path') );
+    my $rel_path = normalize_music_path( scalar $q->param('path') // '' );
 
     my $abs = resolve_music_path($rel_path);
     unless ( defined $abs && -d $abs ) {
@@ -469,57 +747,228 @@ sub upload {
         return;
     }
 
-    my $file_param        = $q->param('filename') // '';
-    my $upload_filehandle = $q->upload('filename');
-    my $max_mb            = $main::config->{music_upload_max_mb} // 100;
+    my $max_mb = $main::config->{music_upload_max_mb} // 100;
+    my @entries = upload_file_entries($q);
 
-    if ( !$upload_filehandle ) {
+    if ( !@entries ) {
         $resp->{variables}{result_type}    = 'error';
         $resp->{variables}{result_message} = "No file received or file size exceeds the ${max_mb} MB limit.";
         return;
     }
 
-    my $safe_filename = basename($file_param);
-    if ( $safe_filename =~ /[^A-Za-z0-9._\- \x{80}-\x{FFFF}]/ ) {
-        $safe_filename =~ s/[^A-Za-z0-9._\- \x{80}-\x{FFFF}]//g;
-    }
+    my %summary = (
+        dest_path => $rel_path,
+        created   => [],
+        skipped   => [],
+        rejected  => [],
+        errors    => [],
+    );
 
-    if ( $safe_filename eq '' || !is_uploadable_file($safe_filename) ) {
-        $resp->{variables}{result_type}    = 'error';
-        $resp->{variables}{result_message} = 'Invalid or unsupported file type. Upload audio or image files only.';
-        return;
-    }
+    for my $entry (@entries) {
+        my %result = process_file_upload( $abs, $entry->{name}, $entry->{fh} );
+        my $path   = $result{path} // $entry->{name};
 
-    my $final_path = File::Spec->catfile( $abs, $safe_filename );
-
-    open( my $out_fh, '>', $final_path ) or do {
-        $resp->{variables}{result_type}    = 'error';
-        $resp->{variables}{result_message} = "Could not write file: $!";
-        return;
-    };
-    binmode $out_fh;
-
-    my $buffer;
-    while ( read( $upload_filehandle, $buffer, 16384 ) ) {
-        print $out_fh $buffer;
-    }
-    close $out_fh;
-
-    my $dest_label = $rel_path eq '' ? 'Music Library' : $rel_path;
-    $resp->{variables}{result_type}      = 'success';
-    $resp->{variables}{result_message}   = "File <strong>" . html_escape_display( $q, $safe_filename ) . "</strong> was uploaded to <strong>" . html_escape_text( $q, $dest_label ) . "</strong>.";
-    $resp->{variables}{music_path}       = $rel_path;
-
-    my $rescan_cfg = lc( $main::config->{music_rescan_after_upload} // 'Yes' );
-    if ( $rescan_cfg eq 'yes' ) {
-        my $host_ip = main::getHostIPAdress();
-        my $port    = $main::config->{music_server_port} // 9000;
-        if ( trigger_lms_rescan( $host_ip, $port ) ) {
-            $resp->{variables}{rescan_note} = 'LMS library rescan was triggered.';
-        } else {
-            $resp->{variables}{rescan_note} = 'Upload succeeded, but LMS rescan could not be triggered.';
+        if ( $result{status} eq 'created' || $result{status} eq 'overwritten' ) {
+            push @{ $summary{created} }, $path;
+        }
+        elsif ( $result{status} eq 'skipped' ) {
+            push @{ $summary{skipped} }, $path;
+        }
+        elsif ( $result{status} eq 'rejected' ) {
+            push @{ $summary{rejected} }, $path;
+        }
+        else {
+            push @{ $summary{errors} }, { path => $path, message => $result{message} // 'Upload failed' };
         }
     }
+
+    apply_upload_summary( $resp, $q, \%summary );
+}
+
+sub show_import_form {
+    my ( $resp, $q ) = @_;
+
+    my @artists = list_artists();
+    my $options = qq{<option value="">Select existing artist...</option>\n};
+    for my $artist (@artists) {
+        my $enc = html_escape_text( $q, $artist );
+        $options .= qq{<option value="$enc">$enc</option>\n};
+    }
+
+    my $max_mb    = $main::config->{music_import_max_mb} // 500;
+    my $batch_sz  = $main::config->{music_import_batch_size} // 25;
+    my @ext       = ( allowed_extensions(), allowed_image_extensions() );
+    my %seen;
+    @ext = grep { !$seen{lc($_)}++ } @ext;
+    my $ext_text  = join( ', ', map { ".$_" } @ext );
+
+    $resp->{variables}{artist_options}   = $options;
+    $resp->{variables}{max_import_mb}    = $max_mb;
+    $resp->{variables}{import_batch_size} = $batch_sz;
+    $resp->{variables}{extensions_text}  = $ext_text;
+
+    main::render_page(
+        $resp,
+        content_template => '../templates/music_import.html',
+        title            => 'Import Music',
+        active_page      => 'music',
+    );
+}
+
+sub import_tree {
+    my ( $resp, $q ) = @_;
+
+    my $mode           = scalar $q->param('import_mode') // 'artist';
+    my $source_artist  = sanitize_dirname( normalize_text( scalar $q->param('source_artist') // '' ) );
+    my $source_album   = sanitize_dirname( normalize_text( scalar $q->param('source_album') // '' ) );
+    my $target_artist  = sanitize_dirname( normalize_text( scalar $q->param('target_artist') // '' ) );
+    my $trigger_rescan = scalar $q->param('trigger_rescan') // '';
+    my $import_count   = 0 + ( scalar $q->param('import_count') // 0 );
+
+    if ( $mode ne 'artist' && $mode ne 'album' ) {
+        return import_json_error( $resp, $q, 'Invalid import mode.' );
+    }
+
+    if ( $mode eq 'artist' ) {
+        return import_json_error( $resp, $q, 'Artist name is required.' )
+          if $source_artist eq '' || !validate_dirname($source_artist);
+    }
+    else {
+        return import_json_error( $resp, $q, 'Target artist is required.' )
+          if $target_artist eq '' || !validate_dirname($target_artist);
+        return import_json_error( $resp, $q, 'Album name is required.' )
+          if $source_album eq '' || !validate_dirname($source_album);
+    }
+
+    if ( !$import_count ) {
+        return import_json_error( $resp, $q, 'No files were received in this batch.' );
+    }
+
+    my %summary = (
+        created  => [],
+        skipped  => [],
+        rejected => [],
+        errors   => [],
+    );
+
+    for my $i ( 0 .. $import_count - 1 ) {
+        my $relpath = normalize_text( scalar $q->param("import_path_$i") // '' );
+        my $fh      = $q->upload("import_file_$i");
+
+        if ( !$fh ) {
+            push @{ $summary{errors} }, { path => $relpath, message => 'Missing upload data' };
+            next;
+        }
+
+        $relpath =~ s{\\}{/}g;
+        if ( $relpath eq '' ) {
+            push @{ $summary{errors} }, { path => '(empty)', message => 'Missing relative path' };
+            next;
+        }
+
+        if ( is_skipped_import_file($relpath) ) {
+            push @{ $summary{rejected} }, $relpath;
+            next;
+        }
+
+        my $dest_rel = map_import_destination( $mode, $source_artist, $source_album, $target_artist, $relpath );
+        if ( $dest_rel eq '' ) {
+            push @{ $summary{errors} }, { path => $relpath, message => 'Could not map destination path' };
+            next;
+        }
+
+        my @parts = split_path_parts($dest_rel);
+        my $filename = pop @parts;
+        if ( !defined $filename || $filename eq '' ) {
+            push @{ $summary{errors} }, { path => $relpath, message => 'Invalid destination file path' };
+            next;
+        }
+
+        if ( !validate_path_parts(@parts) ) {
+            push @{ $summary{errors} }, { path => $relpath, message => 'Invalid folder name in path' };
+            next;
+        }
+
+        my $dir_rel = join_path_parts(@parts);
+        my $abs_dir = abs_path_for_rel($dir_rel);
+        if ( !defined $abs_dir ) {
+            push @{ $summary{errors} }, { path => $relpath, message => 'Destination path is not allowed' };
+            next;
+        }
+
+        if ( !-d $abs_dir && !ensure_parent_dirs( File::Spec->catfile( $abs_dir, $filename ) ) ) {
+            push @{ $summary{errors} }, { path => $relpath, message => 'Could not create destination folders' };
+            next;
+        }
+
+        my $safe_filename = sanitize_filename($filename);
+        if ( $safe_filename eq '' ) {
+            push @{ $summary{rejected} }, $relpath;
+            next;
+        }
+
+        if ( !is_uploadable_file($safe_filename) ) {
+            push @{ $summary{rejected} }, $relpath;
+            next;
+        }
+
+        my $final_path = File::Spec->catfile( $abs_dir, $safe_filename );
+        my %result = safe_write_file( $final_path, $fh );
+
+        if ( $result{status} eq 'created' || $result{status} eq 'overwritten' ) {
+            push @{ $summary{created} }, $dest_rel;
+        }
+        elsif ( $result{status} eq 'skipped' ) {
+            push @{ $summary{skipped} }, $dest_rel;
+        }
+        else {
+            push @{ $summary{errors} }, {
+                path    => $dest_rel,
+                message => $result{reason} // 'Upload failed',
+            };
+        }
+    }
+
+    if ( $trigger_rescan eq '1' && @{ $summary{created} } ) {
+        maybe_trigger_rescan($resp);
+    }
+
+    import_json_result( $resp, $q, \%summary );
+}
+
+sub import_json_error {
+    my ( $resp, $q, $message ) = @_;
+    import_json_result(
+        $resp, $q,
+        {
+            ok       => JSON::PP::false,
+            error    => $message,
+            created  => [],
+            skipped  => [],
+            rejected => [],
+            errors   => [],
+        }
+    );
+}
+
+sub import_json_result {
+    my ( $resp, $q, $summary ) = @_;
+
+    my $payload = {
+        ok       => ( defined $summary->{error} ? \0 : \1 ),
+        created  => $summary->{created}  // [],
+        skipped  => $summary->{skipped}  // [],
+        rejected => $summary->{rejected} // [],
+        errors   => $summary->{errors}   // [],
+        rescan   => $resp->{variables}{rescan_note} // '',
+    };
+    $payload->{error} = $summary->{error} if defined $summary->{error};
+
+    print $q->header(
+        -type    => 'application/json; charset=UTF-8',
+        -charset => 'utf-8',
+    );
+    print encode_json($payload);
 }
 
 sub serve {
